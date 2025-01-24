@@ -156,25 +156,16 @@ def update_df_config(config_list_select):
 
 
 # ------------  GUI -------------------
-file_path = user_sans_file_dir
+file_path = user_qcmd_file_dir
 file_list = os.listdir(file_path)
 file_list = sorted(element for element in file_list if element[0] != '.')
-
-model_path = user_sans_model_dir
-model_list = os.listdir(model_path)
-model_list = sorted([element for element in model_list if '.py' in element])
-
-configfile_names = None
-config_path = user_sans_config_dir
-config_list = os.listdir(config_path)
-config_list = sorted([element for element in config_list if '.json' in element])
 
 st.write("""
 # Job Monitor
 """)
 
 with st.expander('Monitor'):
-    jobtime, status = app_functions.monitor_jobs(user_sans_opt_dir)
+    jobtime, status = app_functions.monitor_jobs(user_qcmd_opt_dir)
     if status == 'idle':
         st.info('No active job.')
     if status == 'running':
@@ -183,38 +174,24 @@ with st.expander('Monitor'):
         st.info('Job finished at ', time.localtime(jobtime))
 
 st.write("""
-# Setup New Optimization
+# Setup New Phase Space Exploration
 """)
 
 with st.expander('Setup'):
-    st.write("""
-    ## SANS Model
-    """)
-    model_name = st.selectbox("Select from user directory", model_list, key='opt_sans_model_selectbox')
-
-    df_pars = None
-    if model_name is not None:
-        df_pars, li_all_pars, datafile_names, model_fitobj = \
-            app_functions.get_info_from_runfile(model_name, user_sans_model_dir, user_sans_file_dir, user_sans_fit_dir)
-        df_pars = df_pars.drop(index=['number', 'relval', 'variable', 'error'])
-        df_pars = df_pars.transpose()
-
-    st.write("""
-    ## Instrument Configurations
-    """)
-    config_list_select = st.multiselect(
-        "Select from user directory",
-        config_list,
-        key='opt_config_selectbox',
-    )
-    update_df_config(config_list_select)
 
     st.write("""
     ## Parameters
     ### Model Fit
     """)
 
-    df_pars['relative'] = True
+    # TODO setup dataframe for exploration parameter selection
+    data = {
+        'name': ['lipid1', 'lipid2', 'lipid3', 'lipid concentration'],
+        'type': ['compound', 'compound', 'compound', 'parameter']
+        'value': [1.0, 1.0, 1.0, 5.0]
+    }
+    df_pars = pandas.DataFrame(data)
+
     df_pars['lower_opt'] = 0.0
     df_pars['upper_opt'] = 1.0
     df_pars['optimize'] = False
@@ -224,17 +201,15 @@ with st.expander('Setup'):
         df_pars,
         key='opt_pars',
         disabled=["_index"],
-        column_order=["type", "value", "lowerlimit", "upperlimit", "relative", "optimize", "lower_opt", "upper_opt",
+        column_order=["name", "type", "value", "optimize", "lower_opt", "upper_opt",
                       "step_opt"],
         column_config={
+            'name': 'name',
             'type': st.column_config.SelectboxColumn(
                 "type",
-                help="Nuisance parameter or contributing to the information content of the measurment.",
-                options=['information', 'nuisance']
+                help="Variable type",
+                options=['compound', 'parameter']
             ),
-            'lowerlimit': "lower fit",
-            'upperlimit': "upper",
-            'relative': 'relative',
             'lower_opt': 'lower opt',
             'upper_opt': 'upper',
             'optimize': 'optimize',
@@ -243,106 +218,11 @@ with st.expander('Setup'):
     )
     st.session_state['opt_parameters'] = parameters_edited
 
-    st.write("""
-    ### Instrument Configurations
-    """)
-    if config_list_select:
-        tablist = st.tabs(config_list_select)
-        first_init_marker = False
-        for i, config in enumerate(st.session_state['df_opt_config_default']):
-            with tablist[i]:
-                if i > 0:
-                    # Shared is disabled except for the first configuration. This is not a limitation as any shared
-                    # setting must be present in all configurations.
-                    disabled = ["_index", "setting", "shared"]
-                else:
-                    # settings can be shared in the first configuration
-                    disabled = ["_index", "setting"]
-
-                # The key argument has a variable string from session state that is used to reset the data editor upon
-                # changing it. Otherwise, this is the typical approach to avoid the every-other-update works only
-                # problem
-                common_keyword_args = {
-                    'key': 'opt_configs_' + str(i) + '_' + st.session_state['df_opt_config_key'][i],
-                    'hide_index': True,
-                    'use_container_width': True,
-                    'disabled': disabled,
-                    'column_order': ["value", "shared", "optimize", "lower_opt", "upper_opt", "step_opt"],
-                    'column_config': {
-                        'lower_opt': 'lower opt',
-                        'upper_opt': 'upper',
-                        'optimize': 'optimize',
-                        'step_opt': 'step'
-                    }
-                }
-                if st.session_state['df_opt_config_associated'][i] is None or first_init_marker:
-                    first_init_marker = True
-                    df_temp = st.session_state['df_opt_config_default'][i].copy()
-                    st.session_state['df_opt_config_associated'][i] = st.data_editor(
-                        df_temp,
-                        **common_keyword_args
-                    )
-                    df_config_edited = st.session_state['df_opt_config_associated'][i]
-                else:
-                    df_config_edited = st.data_editor(
-                        st.session_state['df_opt_config_associated'][i],
-                        **common_keyword_args
-                    )
-
-                st.session_state['df_opt_config_updated'][i] = df_config_edited.copy(deep=True)
-                if i == 0:
-                    adjust_consecutive_configurations(st.session_state['df_opt_config_updated'][i])
-
-    st.write("""
-    ### Simulated Scattering Background
-    """)
-    if model_name is not None and config_list_select:
-        col_opt_1, col_opt_2 = st.columns([1.5, 1])
-        num_datasets = len(datafile_names)
-        li_df = []
-        for i in range(num_datasets):
-            li_df.append([i, None, None])
-        df_opt_background = pandas.DataFrame(li_df, columns=["dataset", "source", "sink"])
-        df_opt_background_edited = col_opt_1.data_editor(
-            df_opt_background,
-            hide_index=True,
-            disabled=["dataset"],
-            column_config={
-                'dataset': 'data set',
-                'source': st.column_config.SelectboxColumn(
-                    "source",
-                    help="Parameter that determines background.",
-                    options=df_pars.index.values
-                ),
-                'sink': st.column_config.SelectboxColumn(
-                    "sink",
-                    help="Parameter that determines background.",
-                    options=df_pars.index.values
-                )
-            }
-        )
-
-        st.session_state['opt_background'] = df_opt_background_edited
-        opt_background_rule = col_opt_2.selectbox("background rule", ['water', 'acetonitrile'])
-
-        st.write("""
-        ### Shorthand Summary
-        """)
-
-        df_summary = summarize_optimization_parameter_settings()
-        st.write(df_summary)
-
-
 st.write("""
 # Run or Continue Optimization
 """)
 col_opt_3, col_opt_4 = st.columns([1, 1])
-qmin = col_opt_4.number_input('q_min [1/Å]', min_value=0.0001, max_value=0.8, value=0.001, format='%.4f', key='opt_qmin')
-qmax = col_opt_4.number_input('q_max [1/Å]', min_value=0.0001, max_value=0.8, value=0.5, key='opt_qmax')
-tfix = col_opt_4.number_input('max time [s]   (0 = use configuation settings)', min_value=0, value=0, format='%i',
-                              step=1200)
 
-opt_fitter = col_opt_3.selectbox("fitter", ['Levenberg-Marquardt', 'DREAM'])
 opt_optimizer = col_opt_3.selectbox("optimizer", ['gaussian process regression (GP)', 'grid search', ])
 if opt_optimizer == 'gaussian process regression (GP)':
     gp_iter = col_opt_3.number_input('GP iterations', min_value=20, value=1000, format='%i', step=100)
