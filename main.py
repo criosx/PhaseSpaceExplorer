@@ -25,19 +25,19 @@ temp_dir = os.path.join(streamlit_dir, 'temp')
 if not os.path.isdir(temp_dir):
     os.mkdir(temp_dir)
 
-app_functions_dir = os.path.join(str(Path(__file__).parent), 'imports')
+app_functions_dir = os.path.join(str(Path(__file__).parent), 'support')
 
 
 # save paths to persistent session state
 st.session_state['streamlit_dir'] = streamlit_dir
-st.session_state['user_sans_file_dir'] = user_qcmd_file_dir
-st.session_state['user_sans_opt_dir'] = user_qcmd_opt_dir
+st.session_state['user_qcmd_file_dir'] = user_qcmd_file_dir
+st.session_state['user_qcmd_opt_dir'] = user_qcmd_opt_dir
 st.session_state['app_functions_dir'] = app_functions_dir
 
 df_folders = pandas.DataFrame({
     'App home': [st.session_state['streamlit_dir']],
     'QCMD data': [st.session_state['user_qcmd_file_dir']],
-    'QCMD experimental optimization': st.session_state['user_QCMD_opt_dir']
+    'QCMD experimental optimization': st.session_state['user_qcmd_opt_dir']
 })
 
 df_folders = df_folders.T

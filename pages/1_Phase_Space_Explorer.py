@@ -8,7 +8,7 @@ import streamlit as st
 import time
 
 import sys
-import app_functions
+import imports.app_functions as app_functions
 sys.path.append(st.session_state['app_functions_dir'])
 
 
@@ -187,7 +187,7 @@ with st.expander('Setup'):
     # TODO setup dataframe for exploration parameter selection
     data = {
         'name': ['lipid1', 'lipid2', 'lipid3', 'lipid concentration'],
-        'type': ['compound', 'compound', 'compound', 'parameter']
+        'type': ['compound', 'compound', 'compound', 'parameter'],
         'value': [1.0, 1.0, 1.0, 5.0]
     }
     df_pars = pandas.DataFrame(data)
@@ -195,7 +195,6 @@ with st.expander('Setup'):
     df_pars['lower_opt'] = 0.0
     df_pars['upper_opt'] = 1.0
     df_pars['optimize'] = False
-    df_pars['type'] = 'information'
     df_pars['step_opt'] = 1.0
     parameters_edited = st.data_editor(
         df_pars,

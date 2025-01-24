@@ -182,15 +182,4 @@ def run_fit(fitdir=None, runfile=None, datafile_names=None, datafile_names_uploa
 
 def run_optimization(optdir=None, runfile=None, file_dir=None, model_dir=None, burn=1000, steps=200):
 
-    datafile_names = api_sasview.extract_data_filenames_from_runfile(runfile=runfile)
-    for file in datafile_names:
-        dfile = os.path.join(file_dir, file)
-        if not os.path.isfile(dfile):
-            infostr = 'Data file ' + file + ' not in user file folder. Please set up complete fit under Models and Fit'
-            st.info(infostr)
-            return
-
-    datafpaths = [os.path.join(file_dir, file) for file in datafile_names]
-    molstat.prepare_fit_directory(fitdir=optdir, runfile=os.path.join(model_dir, runfile), datafile_names=datafpaths)
-
-    # TODO: copy optimization specific files
+    pass
