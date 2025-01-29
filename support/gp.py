@@ -3,14 +3,130 @@ import os.path
 from gpcam.autonomous_experimenter import AutonomousExperimenterGP
 from os import path, mkdir
 
+import math
+import matplotlib.pyplot as plt
 import numpy as np
 import pickle
 import pandas as pd
 
 
+def nice_interval(start=0, stop=1, step=None, numsteps=10):
+    """
+    Paul Kienzle's method to obtain nicely spaced intervals for plot axes
+    """
+
+    if step is None:
+        step = (stop-start)/numsteps
+
+    sign = 1.0
+    if step < 0:
+        sign = -1.0
+        step = step * (-1)
+
+    if step == 0:
+        return [start, stop+1]
+
+    exponent = math.floor(np.log(step)/np.log(10))
+    mantisse = step / pow(10, exponent)
+
+    new_mantisse = 1
+    if math.fabs(mantisse-2) < math.fabs(mantisse-new_mantisse):
+        new_mantisse = 2
+    if math.fabs(mantisse-5) < math.fabs(mantisse-new_mantisse):
+        new_mantisse = 5
+    if math.fabs(mantisse-10) < math.fabs(mantisse-new_mantisse):
+        new_mantisse = 10
+
+    new_step = sign * new_mantisse * pow(10, exponent)
+    new_start = math.floor(start/new_step) * new_step
+    new_stop = math.ceil(stop/new_step) * new_step
+
+    return np.arange(new_start, new_stop+0.05*new_step, new_step)
+
+
+def save_plot_1d(x, y, dy=None, xlabel='', ylabel='', color='blue', filename="plot", ymin=None, ymax=None, levels=5,
+                 niceticks=False, keep_plots=False):
+    import matplotlib.pyplot as plt
+    import matplotlib
+
+    if ymin is None:
+        ymin = np.amin(y)
+    if ymax is None:
+        ymax = np.amax(y)
+
+    font = {'family': 'sans-serif', 'weight': '200', 'size': 14}
+    matplotlib.rc('font', **font)
+
+    fig, ax = plt.subplots()
+    if dy is None:
+        ax.plot(x, y, color=color)
+    else:
+        ax.errorbar(x, y, dy, color=color)
+    if niceticks:
+        bounds = nice_interval(start=ymin, stop=ymax, numsteps=levels)
+        ax.set_yticks(bounds)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.ticklabel_format(scilimits=(-3, 3), useMathText=True)
+
+    plt.tight_layout()
+
+    if keep_plots:
+        i = 0
+        while os.path.isfile(filename + str(i) + '.png'):
+            i += 1
+        filename = filename + str(i)
+
+    plt.savefig(filename + '.pdf')
+    plt.savefig(filename + '.png')
+    plt.close("all")
+
+
+def save_plot_2d(x, y, z, xlabel, ylabel, color, filename='plot', zmin=None, zmax=None, levels=20, mark_maximum=False,
+                 keep_plots=False, support_points=None):
+    import matplotlib.pyplot as plt
+    import matplotlib
+
+    if zmin is None:
+        zmin = np.amin(z)
+    if zmax is None:
+        zmax = np.amax(z)
+    bounds = nice_interval(start=zmin, stop=zmax, numsteps=levels)
+
+    font = {'family': 'sans-serif', 'weight': '200', 'size': 14}
+    matplotlib.rc('font', **font)
+
+    fig, ax = plt.subplots()
+    cs = ax.contourf(x, y, z, cmap=color, vmin=bounds[0], vmax=bounds[-1], levels=bounds, extend='both')
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.ticklabel_format(scilimits=(-3, 3), useMathText=True)
+    fig.colorbar(cs)
+
+    if support_points is not None:
+        plt.scatter(support_points[:, 1], support_points[:, 0], s=10, c='k')
+
+    if mark_maximum:
+        index = np.unravel_index(z.argmax(), z.shape)
+        plt.text(x[index[1]], y[index[0]], 'x', horizontalalignment='center', verticalalignment='center')
+
+    plt.tight_layout()
+
+    if keep_plots:
+        i = 0
+        while os.path.isfile(filename + str(i) + '.png'):
+            i += 1
+        filename = filename + str(i)
+
+    plt.savefig(filename + '.pdf')
+    plt.savefig(filename + '.png')
+    plt.close("all")
+
+
 class gp:
     def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50, gpcam_init_dataset_size=20,
-                 gpcam_step=None, optimizer='gpcam', previous_results=None, show_support_points=False):
+                 gpcam_step=None, keep_plots=False, optimizer='gpcam', previous_results=None,
+                 show_support_points=False):
         """
         Initialize the GP class.
         :param exp_par: (Pandas dataframe) Exploration parameter dataframe with rows: "name", "type", "value",
@@ -23,6 +139,7 @@ class gp:
         self.gpcam_init_dataset_size = gpcam_init_dataset_size
         self.gpcam_step = gpcam_step
         self.gpiteration = 0
+        self.keep_plots = keep_plots
         self.show_support_points = show_support_points
 
         self.my_ae = None
@@ -144,7 +261,7 @@ class gp:
 
         if len(arr_value.shape) == 1:
             ax0 = self.axes[0]
-            sp0 = self.steppar['unique_name'].tolist()[0]
+            sp0 = self.exp_par['name'].tolist()[0]
             if arr_variance is not None:
                 dy = np.sqrt(arr_variance)
             else:
@@ -156,8 +273,8 @@ class gp:
             # numpy array and plot axes are reversed
             ax1 = self.axes[0]
             ax0 = self.axes[1]
-            sp1 = self.steppar['unique_name'].tolist()[0]
-            sp0 = self.steppar['unique_name'].tolist()[1]
+            sp1 = self.exp_par['name'].tolist()[0]
+            sp0 = self.exp_par['name'].tolist()[1]
             save_plot_2d(ax0, ax1, arr_value, xlabel=sp0, ylabel=sp1, color=ec,
                          filename=path.join(path1, filename), zmin=valmin, zmax=valmax, levels=levels,
                          mark_maximum=mark_maximum, keep_plots=self.keep_plots, support_points=support_points)
@@ -165,8 +282,8 @@ class gp:
         elif len(arr_value.shape) == 3 and arr_value.shape[0] < 6:
             ax2 = self.axes[1]
             ax1 = self.axes[2]
-            sp2 = self.steppar['unique_name'].tolist()[1]
-            sp1 = self.steppar['unique_name'].tolist()[2]
+            sp2 = self.exp_par['unique_name'].tolist()[1]
+            sp1 = self.exp_par['unique_name'].tolist()[2]
             for slice_n in range(arr_value.shape[0]):
                 save_plot_2d(ax1, ax2, arr_value[slice_n], xlabel=sp1, ylabel=sp2, color=ec,
                              filename=path.join(path1, filename+'_'+str(slice_n)), zmin=valmin, zmax=valmax,
@@ -174,12 +291,12 @@ class gp:
 
         if len(arr_value.shape) >= 3:
             # plot projections onto two parameters at a time
-            for i in range(len(self.steppar)):
+            for i in range(len(self.exp_par)):
                 for j in range(i):
                     ax2 = self.axes[i]
                     ax1 = self.axes[j]
-                    sp2 = self.steppar['unique_name'].tolist()[i]
-                    sp1 = self.steppar['unique_name'].tolist()[j]
+                    sp2 = self.exp_par['unique_name'].tolist()[i]
+                    sp1 = self.exp_par['unique_name'].tolist()[j]
                     projection = np.empty((self.steplist[i], self.steplist[j]))
                     for k in range(self.steplist[i]):
                         for ll in range(self.steplist[j]):
@@ -272,7 +389,7 @@ class gp:
             # training and client can be killed if desired and in case they are optimized asynchronously
             if self.gpcam_step is None:
                 self.my_ae.kill_training()
-            self.save_results_gpcam(self.spath)
+            self.save_results_gpcam()
             self.gpcam_prediction(self.my_ae)
 
     def run_optimization_grid(self):
