@@ -124,9 +124,9 @@ def save_plot_2d(x, y, z, xlabel, ylabel, color, filename='plot', zmin=None, zma
 
 
 class gp:
-    def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50, gpcam_init_dataset_size=20,
-                 gpcam_step=None, keep_plots=False, optimizer='gpcam', previous_results=None,
-                 show_support_points=False):
+    def __init__(self, exp_par, storage_path=None, acq_func="variance", calc_symmetric=False, gpcam_iterations=50,
+                 gpcam_init_dataset_size=20, gpcam_step=None, keep_plots=False, miniter=1, optimizer='gpcam',
+                 previous_results=None, show_support_points=False):
         """
         Initialize the GP class.
         :param exp_par: (Pandas dataframe) Exploration parameter dataframe with rows: "name", "type", "value",
@@ -135,11 +135,13 @@ class gp:
         :param previous_results: (DataFrame or numpy array) Previous results for gpcam or grid optimizer, respectively
         """
         self.acq_func = acq_func
+        self.calc_symmetric = calc_symmetric
         self.gpcam_iterations = gpcam_iterations
         self.gpcam_init_dataset_size = gpcam_init_dataset_size
         self.gpcam_step = gpcam_step
         self.gpiteration = 0
         self.keep_plots = keep_plots
+        self.miniter = miniter
         self.show_support_points = show_support_points
 
         self.my_ae = None
@@ -172,6 +174,7 @@ class gp:
                 self.results = np.full(self.steplist, np.nan)
             else:
                 self.results = previous_results
+            self.n_iter = np.zeros(self.steplist)
 
         elif optimizer == 'gpcam' or optimizer == 'gpCAM':
             if previous_results is None:
@@ -252,10 +255,29 @@ class gp:
                       filename=path.join(path1, 'prediction_gpcam'), mark_maximum=True,
                       support_points=support_points)
 
+    def gridsearch_iterate_over_all_indices(self, refinement=False):
+        bWorkedOnIndex = False
+        # the complicated iteration syntax is due the unknown dimensionality of the results space / arrays
+        it = np.nditer(self.results, flags=['multi_index'])
+        while not it.finished:
+            itindex = it.multi_index
+            # parameter grids can be symmetric, and only one of the symmetry-related indices
+            # will be calculated unless calc_symmetric is True
+            if all(itindex[i] <= itindex[i + 1] for i in range(len(itindex) - 1)) or self.calc_symmetric:
+                # run iteration if it is first time or the value in results is nan
+                invalid_result = np.isnan(self.results[itindex])
+                insufficient_iterations = self.n_iter[itindex] < self.miniter
+                # Do we need to work on this particular index?
+                if invalid_result or insufficient_iterations:
+                    bWorkedOnIndex = True
+                    _ = self.work_on_iteration(it=it)
+            it.iternext()
+        return bWorkedOnIndex
+
     def plot_arr(self, arr_value, arr_variance=None, filename='plot', mark_maximum=False, valmin=None, valmax=None,
                  levels=20, niceticks=False, vallabel='z', support_points=None):
         # onecolormaps = [plt.cm.Greys, plt.cm.Purples, plt.cm.Blues, plt.cm.Greens, plt.cm.Oranges, plt.cm.Reds]
-        ec = plt.cm.coolwarm
+        ec = plt.colormaps['coolwarm']
 
         path1 = path.join(self.spath, 'plots')
 
@@ -282,8 +304,8 @@ class gp:
         elif len(arr_value.shape) == 3 and arr_value.shape[0] < 6:
             ax2 = self.axes[1]
             ax1 = self.axes[2]
-            sp2 = self.exp_par['unique_name'].tolist()[1]
-            sp1 = self.exp_par['unique_name'].tolist()[2]
+            sp2 = self.exp_par['name'].tolist()[1]
+            sp1 = self.exp_par['name'].tolist()[2]
             for slice_n in range(arr_value.shape[0]):
                 save_plot_2d(ax1, ax2, arr_value[slice_n], xlabel=sp1, ylabel=sp2, color=ec,
                              filename=path.join(path1, filename+'_'+str(slice_n)), zmin=valmin, zmax=valmax,
@@ -295,8 +317,8 @@ class gp:
                 for j in range(i):
                     ax2 = self.axes[i]
                     ax1 = self.axes[j]
-                    sp2 = self.exp_par['unique_name'].tolist()[i]
-                    sp1 = self.exp_par['unique_name'].tolist()[j]
+                    sp2 = self.exp_par['name'].tolist()[i]
+                    sp1 = self.exp_par['name'].tolist()[j]
                     projection = np.empty((self.steplist[i], self.steplist[j]))
                     for k in range(self.steplist[i]):
                         for ll in range(self.steplist[j]):
@@ -357,19 +379,19 @@ class gp:
             self.save_results_gpcam()
             self.gpcam_prediction(self.my_ae)
 
-        while len(self.my_ae.x) < self.gpcam_iterations:
-            print("length of the dataset: ", len(self.my_ae.x))
+        while len(self.my_ae.x_data) < self.gpcam_iterations:
+            print("length of the dataset: ", len(self.my_ae.x_data))
             self.my_ae.train(method="global", max_iter=10000)  # or not, or both, choose "global","local" and "hgdl"
             # update hyperparameters in case they are optimized asynchronously
             self.my_ae.train(method="local")  # or not, or both, choose between "global","local" and "hgdl"
             # training and client can be killed if desired and in case they are optimized asynchronously
             # self.my_ae.kill_training()
             if self.gpcam_step is not None:
-                target_iterations = len(self.my_ae.x) + self.gpcam_step
+                target_iterations = len(self.my_ae.x_data) + self.gpcam_step
                 retrain_async_at = []
             else:
                 target_iterations = self.gpcam_iterations
-                retrain_async_at = np.logspace(start=np.log10(len(self.my_ae.x)),
+                retrain_async_at = np.logspace(start=np.log10(len(self.my_ae.x_data)),
                                                stop=np.log10(self.gpcam_iterations / 2), num=3, dtype=int)
             # run the autonomous loop
             self.my_ae.go(N=target_iterations,
@@ -406,7 +428,7 @@ class gp:
                     # done with refinement
                     break
 
-            if self.bClusterMode or self.bFetchMode:
+            if self.bClusterMode:
                 # never repeat iterations on cluster or when just calculating entropies
                 break
 
@@ -418,3 +440,40 @@ class gp:
     def save_results_gpcam(self):
         with open(path.join(self.spath, 'results', 'gpCAMstream.pkl'), 'wb') as file:
             pickle.dump(self.gpCAMstream, file)
+
+    def work_on_iteration(self, it=None, position=None, gpiteration=None):
+
+        if it is not None:
+            # grid mode, calculate which iteration we are on from itindex
+            # Recover itindex from 'it'. This is not an argument to the function anymore, as work_on_index might
+            # be used independently of iterate_over_all_indices
+            itindex = it.multi_index
+            if self.calc_symmetric:
+                iteration = it.iterindex
+            else:
+                # TODO: This is potentially expensive. Find better method for symmetry-conscious calculation
+                it2 = np.nditer(self.results, flags=['multi_index'])
+                iteration = 0
+                while not it2.finished:
+                    itindex2 = it2.multi_index
+                    if all(itindex2[i] <= itindex2[i + 1] for i in range(len(itindex2) - 1)):
+                        # iterations are only increased if this index is not dropped because of symmetry
+                        iteration += 1
+                    it2.iternext()
+        else:
+            # gpcam mode
+            iteration = gpiteration
+            itindex = None
+
+        # most relevant result for a particular index to return for general use of this function
+        result = 0
+
+
+
+        configurations = self.set_sim_pars_for_iteration(it, position)
+        avg_gmm_marginal = self.calc_entropy_for_iteration(molstat_iter, itindex=itindex)
+
+
+
+        return avg_gmm_marginal
+
