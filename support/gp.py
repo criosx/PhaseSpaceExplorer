@@ -1,11 +1,11 @@
-import os.path
-
 from gpcam.autonomous_experimenter import AutonomousExperimenterGP
 from os import path, mkdir
 
+import concurrent.futures
 import math
 import matplotlib.pyplot as plt
 import numpy as np
+import os.path
 import pickle
 import pandas as pd
 
@@ -124,24 +124,25 @@ def save_plot_2d(x, y, z, xlabel, ylabel, color, filename='plot', zmin=None, zma
 
 
 class gp:
-    def __init__(self, exp_par, storage_path=None, acq_func="variance", calc_symmetric=False, gpcam_iterations=50,
+    def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50,
                  gpcam_init_dataset_size=20, gpcam_step=None, keep_plots=False, miniter=1, optimizer='gpcam',
-                 previous_results=None, show_support_points=False):
+                 parallel_measurements=1, previous_results=None, show_support_points=False):
         """
         Initialize the GP class.
         :param exp_par: (Pandas dataframe) Exploration parameter dataframe with rows: "name", "type", "value",
                         "lower_opt", "upper_opt", "step_opt"
         :param optimizer: (string) Optimizer name 'gpcam', 'gpCAM' (redundant), or 'grid'
-        :param previous_results: (DataFrame or numpy array) Previous results for gpcam or grid optimizer, respectively
+        :param previous_results: (list of DataFrames or numpy arrays) Previous results for gpcam or grid optimizer,
+                                 respectively. [0] for result values and [1] for variances.
         """
         self.acq_func = acq_func
-        self.calc_symmetric = calc_symmetric
         self.gpcam_iterations = gpcam_iterations
         self.gpcam_init_dataset_size = gpcam_init_dataset_size
         self.gpcam_step = gpcam_step
         self.gpiteration = 0
         self.keep_plots = keep_plots
         self.miniter = miniter
+        self.parallel_measurements = parallel_measurements
         self.show_support_points = show_support_points
 
         self.my_ae = None
@@ -172,24 +173,33 @@ class gp:
         if optimizer == 'grid':
             if previous_results is None:
                 self.results = np.full(self.steplist, np.nan)
+                self.variances = np.full(self.steplist, np.nan)
             else:
-                self.results = previous_results
+                self.results = previous_results[0]
+                self.variances = previous_results[1]
             self.n_iter = np.zeros(self.steplist)
 
         elif optimizer == 'gpcam' or optimizer == 'gpCAM':
             if previous_results is None:
                 columns = ['position', 'value', 'variance']
                 self.gpCAMstream = pd.DataFrame(columns=columns)
+                self.gpiteration = 0
             else:
                 self.gpCAMstream = previous_results
+                self.gpiteration = len(previous_results)
 
         self.prediction_gpcam = np.zeros(self.steplist)
+
+    def do_measurement(self, optpars, itlabel):
+        raise NotImplementedError("Subclasses must implement this method.")
+        # return result, variance
 
     def gpcam_instrument(self, data, Test=False):
         print("This is the current length of the data received by gpCAM: ", len(data))
         print("Suggested by gpCAM: ", data)
-        for entry in data:
-            if Test:
+
+        if Test:
+            for entry in data:
                 # value = np.sin(np.linalg.norm(entry["position"]))
                 # value = np.array(entry['position']).sum() / 1000
                 value = (entry['position'][0] - entry['position'][1]) ** 2
@@ -204,19 +214,32 @@ class gp:
                 print('Value: ', entry['value'])
                 variance = None  # 0.01 * np.abs(entry['value'])
                 entry['variance'] = variance
-            else:
-                # TODO: Implement return of experimental value here
-                value = 1
-                variance = None
-                entry["value"] = value
-                entry['variance'] = variance
-                # entry["cost"]  = [np.array([0,0]),entry["position"],np.sum(entry["position"])]
 
-            self.gpCAMstream['position'].append(entry['position'])
-            self.gpCAMstream['value'].append(value)
-            self.gpCAMstream['variance'].append(variance)
-            self.save_results_gpcam()
-            self.gpiteration += 1
+                self.gpCAMstream['position'].append(entry['position'])
+                self.gpCAMstream['value'].append(value)
+                self.gpCAMstream['variance'].append(variance)
+                self.save_results_gpcam()
+                self.gpiteration += 1
+
+        else:
+            argument_list = []
+            for entry in data:
+                argument_list.append([None, entry['position'], self.gpiteration])
+                self.gpiteration += 1
+
+            # parallel execution of a number of self.parallel_measurement measurements
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                results = list(executor.map(self.work_on_iteration, argument_list))
+
+            for i, entry in enumerate(data):
+                entry["value"] = results[i][0]
+                entry['variance'] = results[i][1]
+                # entry["cost"]  =
+                self.gpCAMstream['position'].append(entry['position'])
+                self.gpCAMstream['value'].append(results[i][0])
+                self.gpCAMstream['variance'].append(results[i][1])
+                self.save_results_gpcam()
+
         return data
 
     def gpcam_prediction(self, my_ae):
@@ -259,19 +282,29 @@ class gp:
         bWorkedOnIndex = False
         # the complicated iteration syntax is due the unknown dimensionality of the results space / arrays
         it = np.nditer(self.results, flags=['multi_index'])
+        work_on_it_list = []
+        work_on_itindex_list = []
         while not it.finished:
             itindex = it.multi_index
-            # parameter grids can be symmetric, and only one of the symmetry-related indices
-            # will be calculated unless calc_symmetric is True
-            if all(itindex[i] <= itindex[i + 1] for i in range(len(itindex) - 1)) or self.calc_symmetric:
-                # run iteration if it is first time or the value in results is nan
-                invalid_result = np.isnan(self.results[itindex])
-                insufficient_iterations = self.n_iter[itindex] < self.miniter
-                # Do we need to work on this particular index?
-                if invalid_result or insufficient_iterations:
-                    bWorkedOnIndex = True
-                    _ = self.work_on_iteration(it=it)
+            # run iteration if it is first time or the value in results is nan
+            invalid_result = np.isnan(self.results[itindex])
+            insufficient_iterations = self.n_iter[itindex] < self.miniter
+            # Do we need to work on this particular index?
+            if invalid_result or insufficient_iterations:
+                bWorkedOnIndex = True
+                work_on_it_list.append([it, None, None])
+                work_on_itindex_list.append(itindex)
+
             it.iternext()
+            if (it.finished and work_on_it_list) or len(work_on_it_list) == self.parallel_measurements:
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    results = list(executor.map(self.work_on_iteration, work_on_it_list))
+                for i, entry in enumerate(results):
+                    self.results[work_on_itindex_list[i]] = entry[0]
+                    self.variances[work_on_itindex_list[i]] = entry[1]
+                work_on_it_list = []
+                work_on_itindex_list = []
+
         return bWorkedOnIndex
 
     def plot_arr(self, arr_value, arr_variance=None, filename='plot', mark_maximum=False, valmin=None, valmax=None,
@@ -405,7 +438,7 @@ class gp:
                           acq_func_opt_max_iter=20,
                           acq_func_opt_pop_size=20,
                           acq_func_opt_tol=1e-6,
-                          number_of_suggested_measurements=1,
+                          number_of_suggested_measurements=self.parallel_measurements,
                           acq_func_opt_tol_adjust=0.1)
 
             # training and client can be killed if desired and in case they are optimized asynchronously
@@ -428,15 +461,6 @@ class gp:
                     # done with refinement
                     break
 
-            if self.bClusterMode:
-                # never repeat iterations on cluster or when just calculating entropies
-                break
-
-        # wait for all jobs to finish
-        if self.bClusterMode:
-            while self.joblist:
-                self.waitforjob(bFinish=True)
-
     def save_results_gpcam(self):
         with open(path.join(self.spath, 'results', 'gpCAMstream.pkl'), 'wb') as file:
             pickle.dump(self.gpCAMstream, file)
@@ -444,36 +468,30 @@ class gp:
     def work_on_iteration(self, it=None, position=None, gpiteration=None):
 
         if it is not None:
-            # grid mode, calculate which iteration we are on from itindex
-            # Recover itindex from 'it'. This is not an argument to the function anymore, as work_on_index might
-            # be used independently of iterate_over_all_indices
+            # provide some running index for grid search for possible use as storage label
             itindex = it.multi_index
-            if self.calc_symmetric:
-                iteration = it.iterindex
-            else:
-                # TODO: This is potentially expensive. Find better method for symmetry-conscious calculation
-                it2 = np.nditer(self.results, flags=['multi_index'])
-                iteration = 0
-                while not it2.finished:
-                    itindex2 = it2.multi_index
-                    if all(itindex2[i] <= itindex2[i + 1] for i in range(len(itindex2) - 1)):
-                        # iterations are only increased if this index is not dropped because of symmetry
-                        iteration += 1
-                    it2.iternext()
+            itlabel = it.iterindex
         else:
-            # gpcam mode
-            iteration = gpiteration
-            itindex = None
+            # gpcammode
+            itlabel = gpiteration
 
-        # most relevant result for a particular index to return for general use of this function
-        result = 0
+        optpars = {}
+        # cycle through all parameters
+        for isim, row in enumerate(self.exp_par.itertuples()):
+            lopt = self.exp_par.loc[self.exp_par['name'] == row.name, 'lower_opt'].iloc[0]
+            stepopt = self.exp_par.loc[self.exp_par['name'] == row.name, 'step_opt'].iloc[0]
+            # value = self.exp_par.loc[self.exp_par['name'] == row.name, 'value'].iloc[0]
 
+            if it is not None:
+                # grid mode, calculate value from evaluation grid and index
+                optvalue = lopt + stepopt * it.multi_index[isim]
+                # print(self.steppar['unique_name'], '  ', simvalue, '\n')
+            else:
+                # gpcam mode, use position suggested by gpcam
+                optvalue = position[isim]
 
+            optpars[row.name] = optvalue
 
-        configurations = self.set_sim_pars_for_iteration(it, position)
-        avg_gmm_marginal = self.calc_entropy_for_iteration(molstat_iter, itindex=itindex)
+        result, variance = self.do_measurement(optpars, itlabel)
 
-
-
-        return avg_gmm_marginal
-
+        return result, variance
