@@ -27,7 +27,6 @@ if not os.path.isdir(temp_dir):
 
 app_functions_dir = os.path.join(str(Path(__file__).parent), 'support')
 
-
 # save paths to persistent session state
 st.session_state['streamlit_dir'] = streamlit_dir
 st.session_state['user_qcmd_file_dir'] = user_qcmd_file_dir

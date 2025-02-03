@@ -123,17 +123,16 @@ def save_plot_2d(x, y, z, xlabel, ylabel, color, filename='plot', zmin=None, zma
     plt.close("all")
 
 
-class gp:
+class Gp:
     def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50,
                  gpcam_init_dataset_size=20, gpcam_step=None, keep_plots=False, miniter=1, optimizer='gpcam',
-                 parallel_measurements=1, previous_results=None, show_support_points=False):
+                 parallel_measurements=1, resume=False, show_support_points=False):
         """
         Initialize the GP class.
         :param exp_par: (Pandas dataframe) Exploration parameter dataframe with rows: "name", "type", "value",
                         "lower_opt", "upper_opt", "step_opt"
         :param optimizer: (string) Optimizer name 'gpcam', 'gpCAM' (redundant), or 'grid'
-        :param previous_results: (list of DataFrames or numpy arrays) Previous results for gpcam or grid optimizer,
-                                 respectively. [0] for result values and [1] for variances.
+        :param resume: (bool, default False) loads previous results from the storage path.
         """
         self.acq_func = acq_func
         self.gpcam_iterations = gpcam_iterations
@@ -142,6 +141,9 @@ class gp:
         self.gpiteration = 0
         self.keep_plots = keep_plots
         self.miniter = miniter
+        self.optimizer = optimizer
+        if self.optimizer == 'gpCAM':
+            self.optimizer = 'gpcam'
         self.parallel_measurements = parallel_measurements
         self.show_support_points = show_support_points
 
@@ -170,23 +172,21 @@ class gp:
                 axis.append(row.l_sim + i * row.step_sim)
             self.axes.append(axis)
 
-        if optimizer == 'grid':
-            if previous_results is None:
+        if self.optimizer == 'grid':
+            if not resume:
                 self.results = np.full(self.steplist, np.nan)
                 self.variances = np.full(self.steplist, np.nan)
+                self.n_iter = np.zeros(self.steplist)
             else:
-                self.results = previous_results[0]
-                self.variances = previous_results[1]
-            self.n_iter = np.zeros(self.steplist)
+                self.results_io(load=True)
 
-        elif optimizer == 'gpcam' or optimizer == 'gpCAM':
-            if previous_results is None:
+        elif self.optimizer == 'gpcam':
+            if not resume:
                 columns = ['position', 'value', 'variance']
                 self.gpCAMstream = pd.DataFrame(columns=columns)
                 self.gpiteration = 0
             else:
-                self.gpCAMstream = previous_results
-                self.gpiteration = len(previous_results)
+                self.results_io(load=True)
 
         self.prediction_gpcam = np.zeros(self.steplist)
 
@@ -218,7 +218,7 @@ class gp:
                 self.gpCAMstream['position'].append(entry['position'])
                 self.gpCAMstream['value'].append(value)
                 self.gpCAMstream['variance'].append(variance)
-                self.save_results_gpcam()
+                self.results_io()
                 self.gpiteration += 1
 
         else:
@@ -238,7 +238,7 @@ class gp:
                 self.gpCAMstream['position'].append(entry['position'])
                 self.gpCAMstream['value'].append(results[i][0])
                 self.gpCAMstream['variance'].append(results[i][1])
-                self.save_results_gpcam()
+                self.results_io()
 
         return data
 
@@ -302,6 +302,7 @@ class gp:
                 for i, entry in enumerate(results):
                     self.results[work_on_itindex_list[i]] = entry[0]
                     self.variances[work_on_itindex_list[i]] = entry[1]
+                self.results_io()
                 work_on_it_list = []
                 work_on_itindex_list = []
 
@@ -360,6 +361,14 @@ class gp:
                                  filename=path.join(path1, filename+'_'+sp1+'_'+sp2), zmin=valmin, zmax=valmax,
                                  levels=levels, mark_maximum=mark_maximum, keep_plots=self.keep_plots)
 
+    def run(self):
+        if self.optimizer == 'grid':
+            self.run_optimization_grid()
+        if self.optimizer == 'gpcam':
+            self.run_optimization_gpcam()
+        else:
+            raise NotImplementedError('Unknown optimization method')
+
     def run_optimization_gpcam(self):
         # Using the gpCAM global optimizer, follows the example from the gpCAM website
 
@@ -409,7 +418,7 @@ class gp:
 
         # save and evaluate initial data set if it has been freshly calculate
         if bFirstEval:
-            self.save_results_gpcam()
+            self.results_io()
             self.gpcam_prediction(self.my_ae)
 
         while len(self.my_ae.x_data) < self.gpcam_iterations:
@@ -444,7 +453,7 @@ class gp:
             # training and client can be killed if desired and in case they are optimized asynchronously
             if self.gpcam_step is None:
                 self.my_ae.kill_training()
-            self.save_results_gpcam()
+            self.results_io()
             self.gpcam_prediction(self.my_ae)
 
     def run_optimization_grid(self):
@@ -461,9 +470,31 @@ class gp:
                     # done with refinement
                     break
 
-    def save_results_gpcam(self):
-        with open(path.join(self.spath, 'results', 'gpCAMstream.pkl'), 'wb') as file:
-            pickle.dump(self.gpCAMstream, file)
+    def results_io(self, load=False):
+        if self.optimizer == 'grid':
+            if load:
+                with open(path.join(self.spath, 'results', 'pse_grid_results.pkl'), 'rb') as file:
+                    self.results = pickle.load(file)
+                with open(path.join(self.spath, 'results', 'pse_grid_variances.pkl'), 'rb') as file:
+                    self.variances = pickle.load(file)
+                with open(path.join(self.spath, 'results', 'pse_grid_iterations.pkl'), 'rb') as file:
+                    self.n_iter = pickle.load(file)
+            else:
+                with open(path.join(self.spath, 'results', 'pse_grid_results.pkl'), 'wb') as file:
+                    pickle.dump(self.results, file)
+                with open(path.join(self.spath, 'results', 'pse_grid_variances.pkl'), 'wb') as file:
+                    pickle.dump(self.variances, file)
+                with open(path.join(self.spath, 'results', 'pse_grid_iterations.pkl'), 'wb') as file:
+                    pickle.dump(self.n_iter, file)
+        elif self.optimizer == 'gpcam':
+            if load:
+                with open(path.join(self.spath, 'results', 'gpCAMstream.pkl'), 'rb') as file:
+                    self.gpCAMstream = pickle.load(file)
+            else:
+                with open(path.join(self.spath, 'results', 'gpCAMstream.pkl'), 'wb') as file:
+                    pickle.dump(self.gpCAMstream, file)
+        else:
+            raise NotImplementedError('Unknown optimization method')
 
     def work_on_iteration(self, it=None, position=None, gpiteration=None):
 

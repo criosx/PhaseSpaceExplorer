@@ -229,6 +229,6 @@ if opt_optimizer == 'gaussian process regression (GP)':
 
 col_opt_5, col_opt_6 = st.columns([1, 1])
 if col_opt_5.button('Start Optimization', disabled=(status != 'idle'), use_container_width=True):
-    app_functions.run_optimization()
+    app_functions.run_pse()
 if col_opt_5.button('Resume Optimization', disabled=(status != 'finished'), use_container_width=True):
-    app_functions.run_optimization()
+    app_functions.resume_pse()
