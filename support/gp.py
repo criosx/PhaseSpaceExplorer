@@ -2,12 +2,14 @@ from gpcam.autonomous_experimenter import AutonomousExperimenterGP
 from os import path, mkdir
 
 import concurrent.futures
+from functools import partial
 import math
 import matplotlib.pyplot as plt
 import numpy as np
 import os.path
 import pickle
 import pandas as pd
+import time
 
 
 def nice_interval(start=0, stop=1, step=None, numsteps=10):
@@ -125,8 +127,8 @@ def save_plot_2d(x, y, z, xlabel, ylabel, color, filename='plot', zmin=None, zma
 
 class Gp:
     def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50,
-                 gpcam_init_dataset_size=20, gpcam_step=None, keep_plots=False, miniter=1, optimizer='gpcam',
-                 parallel_measurements=1, resume=False, show_support_points=False):
+                 gpcam_init_dataset_size=20, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam',
+                 parallel_measurements=1, resume=False, show_support_points=True):
         """
         Initialize the GP class.
         :param exp_par: (Pandas dataframe) Exploration parameter dataframe with rows: "name", "type", "value",
@@ -156,8 +158,19 @@ class Gp:
             mkdir(storage_path)
         self.spath = storage_path
 
+        result_path = os.path.join(self.spath, 'results')
+        if not path.isdir(result_path):
+            mkdir(result_path)
+        plot_path = os.path.join(self.spath, 'plots')
+        if not path.isdir(plot_path):
+            mkdir(plot_path)
+
         # Pandas dataframe of exploration parameters
+
+        self.all_par = exp_par
         self.exp_par = exp_par
+        # keep only rows that are being explored
+        self.exp_par = self.exp_par[self.exp_par['optimize']]
         columns_to_keep = ['name', 'type', 'value', 'lower_opt', 'upper_opt', 'step_opt']
         self.exp_par = self.exp_par[columns_to_keep]
 
@@ -165,11 +178,11 @@ class Gp:
         self.steplist = []
         self.axes = []
         for row in self.exp_par.itertuples():
-            steps = int((row.u_sim - row.l_sim) / row.step_sim) + 1
+            steps = int((row.upper_opt - row.lower_opt) / row.step_opt) + 1
             self.steplist.append(steps)
             axis = []
             for i in range(steps):
-                axis.append(row.l_sim + i * row.step_sim)
+                axis.append(row.lower_opt + i * row.step_opt)
             self.axes.append(axis)
 
         if self.optimizer == 'grid':
@@ -190,55 +203,45 @@ class Gp:
 
         self.prediction_gpcam = np.zeros(self.steplist)
 
-    def do_measurement(self, optpars, itlabel):
-        raise NotImplementedError("Subclasses must implement this method.")
-        # return result, variance
+    def do_measurement(self, optpars, it_label):
+        """
+        This function performs the actual measurement and needs to be implemented in each subclass. Here, a test
+        function providing virtual data is provided
+        :param optpars: specific set of parameters for the measurement
+        :param it_label: a label for the current iteration
+        :return: (result, variance) measurement result
+        """
+        argument = 0
+        for par in optpars:
+            argument += optpars[par] * 2 * np.pi
 
-    def gpcam_instrument(self, data, Test=False):
+        result = np.sin(argument)
+        variance = np.abs(result * 0.025)
+
+        time.sleep(2)
+        return result, variance
+
+    def gpcam_instrument(self, data):
         print("This is the current length of the data received by gpCAM: ", len(data))
         print("Suggested by gpCAM: ", data)
 
-        if Test:
-            for entry in data:
-                # value = np.sin(np.linalg.norm(entry["position"]))
-                # value = np.array(entry['position']).sum() / 1000
-                value = (entry['position'][0] - entry['position'][1]) ** 2
-                time0 = entry['position'][2]
-                time1 = entry['position'][3]
-                time2 = entry['position'][4]
-                tf = 14400 / (time0 + time1 + time2)
-                value += np.log10(time0 * tf) * 0.5
-                value += np.log10(time1 * tf) * 1.5
-                value += np.log10(time2 * tf) * 1
-                entry['value'] = value
-                print('Value: ', entry['value'])
-                variance = None  # 0.01 * np.abs(entry['value'])
-                entry['variance'] = variance
+        argument_list = []
+        for entry in data:
+            argument_list.append((None, entry['x_data'], self.gpiteration))
+            self.gpiteration += 1
 
-                self.gpCAMstream['position'].append(entry['position'])
-                self.gpCAMstream['value'].append(value)
-                self.gpCAMstream['variance'].append(variance)
-                self.results_io()
-                self.gpiteration += 1
+        # parallel execution of a number of self.parallel_measurement measurements
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            results = list(executor.map(self.work_on_iteration, argument_list))
 
-        else:
-            argument_list = []
-            for entry in data:
-                argument_list.append([None, entry['position'], self.gpiteration])
-                self.gpiteration += 1
+        for i, entry in enumerate(data):
+            entry["y_data"] = results[i][0]
+            entry['noise variance'] = results[i][1]
+            # entry["cost"]  =
+            new_row = {'position': entry['x_data'], 'value': results[i][0], 'variance': results[i][1]}
+            self.gpCAMstream.loc[len(self.gpCAMstream)] = new_row
 
-            # parallel execution of a number of self.parallel_measurement measurements
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                results = list(executor.map(self.work_on_iteration, argument_list))
-
-            for i, entry in enumerate(data):
-                entry["value"] = results[i][0]
-                entry['variance'] = results[i][1]
-                # entry["cost"]  =
-                self.gpCAMstream['position'].append(entry['position'])
-                self.gpCAMstream['value'].append(results[i][0])
-                self.gpCAMstream['variance'].append(results[i][1])
-                self.results_io()
+            self.results_io()
 
         return data
 
@@ -270,7 +273,9 @@ class Gp:
         # self.plot_arr(self.prediction_gpcam, filename=path.join(path1, 'prediction_gpcam'), mark_maximum=True)
 
         if self.show_support_points:
-            support_points = np.array(self.gpCAMstream['position'])
+            support_points = self.gpCAMstream['position'].to_numpy()
+            if support_points.dtype == object:
+                support_points = np.stack(support_points)
         else:
             support_points = None
 
@@ -292,7 +297,7 @@ class Gp:
             # Do we need to work on this particular index?
             if invalid_result or insufficient_iterations:
                 bWorkedOnIndex = True
-                work_on_it_list.append([it, None, None])
+                work_on_it_list.append((it, None, None))
                 work_on_itindex_list.append(itindex)
 
             it.iternext()
@@ -310,6 +315,7 @@ class Gp:
 
     def plot_arr(self, arr_value, arr_variance=None, filename='plot', mark_maximum=False, valmin=None, valmax=None,
                  levels=20, niceticks=False, vallabel='z', support_points=None):
+
         # onecolormaps = [plt.cm.Greys, plt.cm.Purples, plt.cm.Blues, plt.cm.Greens, plt.cm.Oranges, plt.cm.Reds]
         ec = plt.colormaps['coolwarm']
 
@@ -375,13 +381,18 @@ class Gp:
         # initialization
         # feel free to try different acquisition functions, e.g. optional_acq_func, "covariance", "shannon_ig"
         # note how costs are defined in for the autonomous experimenter
-        parlimits = self.exp_par[['l_sim', 'u_sim']].to_numpy()
+        parlimits = self.exp_par[['lower_opt', 'upper_opt']].to_numpy()
         numpars = len(parlimits)
 
         # those are Pandas dataframe colunns
-        x = self.gpCAMstream['position']
-        y = self.gpCAMstream['value']
-        v = self.gpCAMstream['variance']
+        x = self.gpCAMstream['position'].to_numpy()
+        if x.size != 0 and x.dtype == object:
+            x = np.stack(x)
+        y = self.gpCAMstream['value'].to_numpy()
+        v = self.gpCAMstream['variance'].to_numpy()
+
+        print('This is the current state of the gpCAM stream at the beginning of run_optimization_gpcam:')
+        print(x, y, v)
 
         if len(x) >= 1:
             # use any previously computed results
@@ -433,22 +444,26 @@ class Gp:
                 retrain_async_at = []
             else:
                 target_iterations = self.gpcam_iterations
+                # not used because parallel execution of retrain interferes with streamlit
                 retrain_async_at = np.logspace(start=np.log10(len(self.my_ae.x_data)),
                                                stop=np.log10(self.gpcam_iterations / 2), num=3, dtype=int)
+            retrain_global_at = np.linspace(start=1, stop=len(self.my_ae.x_data), num=int(target_iterations/2))
+            retrain_local_at = np.linspace(start=2, stop=len(self.my_ae.x_data), num=int(target_iterations/2))
             # run the autonomous loop
             self.my_ae.go(N=target_iterations,
-                          retrain_async_at=retrain_async_at,
-                          retrain_globally_at=[],
-                          retrain_locally_at=[],
-                          acq_func_opt_setting=lambda number: "global" if number % 2 == 0 else "local",
-                          training_opt_max_iter=20,
-                          training_opt_pop_size=10,
-                          training_opt_tol=1e-6,
-                          acq_func_opt_max_iter=20,
-                          acq_func_opt_pop_size=20,
-                          acq_func_opt_tol=1e-6,
+                          retrain_async_at=[],  # retrain_async_at,
+                          retrain_globally_at=retrain_global_at,
+                          retrain_locally_at=retrain_local_at,
+                          acq_func_opt_setting=lambda obj: "global" if len(obj.data.dataset) % 2 == 0 else "local",
+                          # training_opt_max_iter=200,
+                          # training_opt_pop_size=10,
+                          # training_opt_tol=1e-6,
+                          # acq_func_opt_max_iter=200,
+                          # acq_func_opt_pop_size=20,
+                          # acq_func_opt_tol=1e-6,
                           number_of_suggested_measurements=self.parallel_measurements,
-                          acq_func_opt_tol_adjust=0.1)
+                          # acq_func_opt_tol_adjust=0.1
+                          )
 
             # training and client can be killed if desired and in case they are optimized asynchronously
             if self.gpcam_step is None:
@@ -490,13 +505,21 @@ class Gp:
             if load:
                 with open(path.join(self.spath, 'results', 'gpCAMstream.pkl'), 'rb') as file:
                     self.gpCAMstream = pickle.load(file)
+                print('Loaded gpCAMstream:')
+                print(self.gpCAMstream)
             else:
                 with open(path.join(self.spath, 'results', 'gpCAMstream.pkl'), 'wb') as file:
                     pickle.dump(self.gpCAMstream, file)
+                print('Saved gpCAMstream:')
+                print(self.gpCAMstream)
         else:
             raise NotImplementedError('Unknown optimization method')
 
-    def work_on_iteration(self, it=None, position=None, gpiteration=None):
+    def work_on_iteration(self, arguments):
+
+        # only one argument is passed in the function to make it easier to work with
+        # concurrent.futures.ThreadPoolExecutor()
+        it, position, gpiteration = arguments
 
         if it is not None:
             # provide some running index for grid search for possible use as storage label
