@@ -195,7 +195,7 @@ class Gp:
 
         elif self.optimizer == 'gpcam':
             if not resume:
-                columns = ['position', 'value', 'variance']
+                columns = ['parameter names', 'position', 'value', 'variance']
                 self.gpCAMstream = pd.DataFrame(columns=columns)
                 self.gpiteration = 0
             else:
@@ -222,13 +222,25 @@ class Gp:
         return result, variance
 
     def gpcam_instrument(self, data):
-        print("This is the current length of the data received by gpCAM: ", len(data))
-        print("Suggested by gpCAM: ", data)
+        """
+        The gpcam instrument function that will receive a number of data points for measurment from the autonomous
+        experimenter and returns the data structure with measurement results including the measurement value and
+        variance. In our implementation a series of parallel measurement tasks is spawned and the function waits
+        for them to complete. While the measurement occurs a dictionary denoting the current measurement points
+        is saved to disk.
+        :param data: (from gpcam) a list of x_values for evaluation
+        :return: the input parameter with measurment result and variance addded to it
+        """
+
+        # print("This is the current length of the data received by gpCAM: ", len(data))
+        # print("Suggested by gpCAM: ", data)
 
         argument_list = []
         for entry in data:
             argument_list.append((None, entry['x_data'], self.gpiteration))
             self.gpiteration += 1
+
+        self.worked_on_iterations_save(argument_list)
 
         # parallel execution of a number of self.parallel_measurement measurements
         with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -238,10 +250,13 @@ class Gp:
             entry["y_data"] = results[i][0]
             entry['noise variance'] = results[i][1]
             # entry["cost"]  =
-            new_row = {'position': entry['x_data'], 'value': results[i][0], 'variance': results[i][1]}
+            new_row = {'parameter names': self.exp_par['name'].to_list(), 'position': entry['x_data'],
+                       'value': results[i][0], 'variance': results[i][1]}
             self.gpCAMstream.loc[len(self.gpCAMstream)] = new_row
 
             self.results_io()
+
+        self.worked_on_iterations_delete()
 
         return data
 
@@ -391,9 +406,6 @@ class Gp:
         y = self.gpCAMstream['value'].to_numpy()
         v = self.gpCAMstream['variance'].to_numpy()
 
-        print('This is the current state of the gpCAM stream at the beginning of run_optimization_gpcam:')
-        print(x, y, v)
-
         if len(x) >= 1:
             # use any previously computed results
             x = np.array(x)
@@ -505,20 +517,60 @@ class Gp:
             if load:
                 with open(path.join(self.spath, 'results', 'gpCAMstream.pkl'), 'rb') as file:
                     self.gpCAMstream = pickle.load(file)
-                print('Loaded gpCAMstream:')
-                print(self.gpCAMstream)
             else:
                 with open(path.join(self.spath, 'results', 'gpCAMstream.pkl'), 'wb') as file:
                     pickle.dump(self.gpCAMstream, file)
-                print('Saved gpCAMstream:')
-                print(self.gpCAMstream)
         else:
             raise NotImplementedError('Unknown optimization method')
 
-    def work_on_iteration(self, arguments):
+    def worked_on_iterations_delete(self):
+        """
+        Deletes any existing current iterations file in the results directory of the active project.
+        :return: no return value
+        """
+        if os.path.exists(path.join(self.spath, 'results', 'current_iterations.pkl')):
+            os.remove(path.join(self.spath, 'results', 'current_iterations.pkl'))
 
+    def worked_on_iterations_save(self, argument_list):
+        """
+        Saves the currently worked on iterations parameters to file for visualization.
+        :param argument_list: list of arguments (see yield_optpars_label)
+        :return: None
+        """
+        output_df = pd.DataFrame()
+        for argument in argument_list:
+            optpars, itlabel = self.yield_optpars_label(argument)
+            optpars['storage label'] = itlabel
+            new_row = pd.DataFrame([optpars])
+            output_df = pd.concat([output_df, new_row], ignore_index=True)
+
+        with open(path.join(self.spath, 'results', 'current_iterations.pkl'), 'wb') as file:
+            pickle.dump(output_df, file)
+
+    def work_on_iteration(self, arguments):
+        """
+        Performs a single interation (measurement) of either a grid search or gpcam
+        :param arguments: (tuple) it object for grid search, position (x_value) for gpcam, gplabel for gpcam. Not
+                          applying fields can be none, see also yield_optpars_label
+        :return: (float, float) result and variance of the performed measurement
+        """
         # only one argument is passed in the function to make it easier to work with
         # concurrent.futures.ThreadPoolExecutor()
+        optpars, itlabel = self.yield_optpars_label(arguments)
+        result, variance = self.do_measurement(optpars, itlabel)
+
+        return result, variance
+
+    def yield_optpars_label(self, arguments):
+        """
+        Helper function that creates a dictionary of parameter names and their values plus a label for the current
+        iteration.
+        :param arguments: (tuple) it object for grid search, position (x_value) for gpcam, gplabel for gpcam. Not
+                          applying fields can be none
+        :return: (dict, label) dictionary with parameter names as keys and their values as values and a label used
+                 for storage of the iteration
+        """
+
         it, position, gpiteration = arguments
 
         if it is not None:
@@ -546,6 +598,7 @@ class Gp:
 
             optpars[row.name] = optvalue
 
-        result, variance = self.do_measurement(optpars, itlabel)
+        return optpars, itlabel
 
-        return result, variance
+
+

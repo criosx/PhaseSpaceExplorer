@@ -13,7 +13,8 @@ import sys
 from support import app_functions
 sys.path.append(st.session_state['app_functions_dir'])
 
-jobs_status = None
+if 'jobs_status' not in st.session_state:
+    st.session_state['jobs_status'] = 'idle'
 if 'widget_key' not in st.session_state:
     st.session_state['widget_key'] = str(uuid.uuid4())
 
@@ -29,7 +30,7 @@ def activate_project(project_name):
 
 
 def create_new_project(project_name):
-    project_dir1 = os.path.join(st.session_state['streamlit_dir'], project_name)
+    project_dir1 = str(os.path.join(st.session_state['streamlit_dir'], project_name))
     os.mkdir(project_dir1)
     project_dir = os.path.join(project_dir1, 'phase_space')
     os.mkdir(project_dir)
@@ -39,16 +40,9 @@ def create_new_project(project_name):
     os.mkdir(plots_dir)
 
     # TODO implement parameter data frame initializion
-    df_opt_pars = {
-        'name': ['lipid1', 'lipid2', 'lipid3', 'lipid concentration'],
-        'type': ['compound', 'compound', 'compound', 'parameter'],
-        'value': [1.0, 1.0, 1.0, 5.0]
-    }
-    df_opt_pars['lower_opt'] = 0.0
-    df_opt_pars['upper_opt'] = 1.0
-    df_opt_pars['optimize'] = False
-    df_opt_pars['step_opt'] = 0.01
-
+    df_opt_pars = {'name': ['lipid1', 'lipid2', 'lipid3', 'lipid concentration'],
+                   'type': ['compound', 'compound', 'compound', 'parameter'], 'value': [1.0, 1.0, 1.0, 5.0],
+                   'lower_opt': 0.0, 'upper_opt': 1.0, 'optimize': False, 'step_opt': 0.01}
     st.session_state['opt_pars_original'] = df_opt_pars
     st.session_state['opt_pars'] = df_opt_pars
     st.session_state['active_project'] = project_name
@@ -107,10 +101,27 @@ st.write("""
 # Job Monitor
 """)
 
-with st.expander('Monitor'):
+with (st.expander('Monitor')):
+
     # List to store paths to .png files
     png_files = []
     if st.session_state['user_qcmd_opt_dir'] is not None:
+
+        # List current iterations to be worked on
+        ci_path = os.path.join(st.session_state['user_qcmd_opt_dir'], 'results', 'current_iterations.pkl')
+        if os.path.exists(ci_path):
+            with open(ci_path, 'rb') as file:
+                df_ci = pandas.DataFrame(pickle.load(file))
+            st.text("Current measurements in progress:")
+            st.dataframe(df_ci, hide_index=True)
+
+        res_path = os.path.join(st.session_state['user_qcmd_opt_dir'], 'results', 'gpCAMstream.pkl')
+        if os.path.exists(res_path):
+            with open(res_path, 'rb') as file:
+                df_res_gpcam = pandas.DataFrame(pickle.load(file))
+            st.text("Finished measurements:")
+            st.dataframe(df_res_gpcam, hide_index=False, use_container_width=True)
+
         figure_path = os.path.join(st.session_state['user_qcmd_opt_dir'], 'plots')
         # Iterate over all entries in the directory
         for entry in os.listdir(figure_path):
@@ -123,9 +134,8 @@ with st.expander('Monitor'):
     for file in png_files:
         st.image(file, use_container_width=True)
 
-    if png_files:
-        if st.button('Update job monitor'):
-            pass
+    if st.button('Update job monitor'):
+        pass
 
 st.write("""
 # Setup New Phase Space Exploration
@@ -178,11 +188,11 @@ if opt_optimizer == 'gpcam':
     opt_acq = col_opt_3.selectbox("GP acquisition function", ['shannon_ig_vec', 'ucb', 'variance', 'maximum'])
 
 col_opt_5, col_opt_6 = st.columns([1, 1])
-if col_opt_5.button('Start Optimization', disabled=(jobs_status == 'running'), use_container_width=True):
+st.info('Job status: {}'.format(st.session_state['jobs_status']))
+if col_opt_5.button('Start or Resume Optimization', disabled=(st.session_state['jobs_status'] == 'running'),
+                    use_container_width=True):
+    st.session_state['jobs_status'] = 'running'
     app_functions.run_pse(pse_pars=pandas.DataFrame(st.session_state['opt_pars']),
                           pse_dir=st.session_state['user_qcmd_opt_dir'],
                           acq_func=opt_acq, optimizer=opt_optimizer, gpcam_iterations=gp_iter)
-if col_opt_5.button('Resume Optimization', disabled=(jobs_status == 'running'), use_container_width=True):
-    app_functions.run_pse(pse_pars=pandas.DataFrame(st.session_state['opt_pars']),
-                          pse_dir=st.session_state['user_qcmd_opt_dir'],
-                          acq_func=opt_acq, optimizer=opt_optimizer, gpcam_iterations=gp_iter)
+
