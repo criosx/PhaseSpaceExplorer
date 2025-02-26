@@ -185,6 +185,10 @@ class Gp:
                 axis.append(row.lower_opt + i * row.step_opt)
             self.axes.append(axis)
 
+        # initialize new run if result dir is empty
+        if resume and not os.listdir(path.join(self.spath, 'results')):
+            resume = False
+
         if self.optimizer == 'grid':
             if not resume:
                 self.results = np.full(self.steplist, np.nan)
@@ -216,7 +220,7 @@ class Gp:
             argument += optpars[par] * 2 * np.pi
 
         result = np.sin(argument)
-        variance = np.abs(result * 0.025)
+        variance = np.abs(result * 0.025) + 0.001
 
         time.sleep(2)
         return result, variance
@@ -427,6 +431,13 @@ class Gp:
         for i in range(len(parlimits)):
             delta = parlimits[i][1] - parlimits[i][0]
             hyper_bounds[i + 1] = [delta * 1e-3, delta * 1e1]
+
+        print('-----------------')
+        print(x)
+        print('-----------------')
+        print(y)
+        print('-----------------')
+        print(v)
 
         self.my_ae = AutonomousExperimenterGP(parlimits, hyperpars, hyper_bounds,
                                               init_dataset_size=self.gpcam_init_dataset_size,

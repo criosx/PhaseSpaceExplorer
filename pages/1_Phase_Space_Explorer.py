@@ -17,6 +17,8 @@ if 'jobs_status' not in st.session_state:
     st.session_state['jobs_status'] = 'idle'
 if 'widget_key' not in st.session_state:
     st.session_state['widget_key'] = str(uuid.uuid4())
+if 'gp_iterations' not in st.session_state:
+    st.session_state['gp_iterations'] = 50
 
 
 # ------------ Functionality -----------
@@ -122,6 +124,13 @@ with (st.expander('Monitor')):
             st.text("Finished measurements:")
             st.dataframe(df_res_gpcam, hide_index=False, use_container_width=True)
 
+            if st.session_state['jobs_status'] == 'running':
+                if df_res_gpcam.shape[0] >= st.session_state['gp_iterations']:
+                    st.session_state['jobs_status'] = 'idle'
+
+        if st.session_state['jobs_status'] == 'idle':
+            st.text("No measurements in progress")
+
         figure_path = os.path.join(st.session_state['user_qcmd_opt_dir'], 'plots')
         # Iterate over all entries in the directory
         for entry in os.listdir(figure_path):
@@ -151,7 +160,6 @@ with st.expander('Setup'):
     if project is not None:
         project_dir = os.path.join(st.session_state['streamlit_dir'], project, 'phase_space')
         if project_dir != st.session_state['user_qcmd_opt_dir']:
-            print('trying to activate')
             activate_project(project)
             st.session_state['widget_key'] = str(uuid.uuid4())
 
@@ -185,14 +193,18 @@ opt_acq = 'variance'
 gp_iter = 50
 if opt_optimizer == 'gpcam':
     gp_iter = col_opt_3.number_input('GP iterations', min_value=20, value=1000, format='%i', step=100)
-    opt_acq = col_opt_3.selectbox("GP acquisition function", ['shannon_ig_vec', 'ucb', 'variance', 'maximum'])
+    opt_acq = col_opt_3.selectbox("GP acquisition function", ['variance', 'ucb', 'relative information entropy',
+                                                              'probability of improvement'])
 
 col_opt_5, col_opt_6 = st.columns([1, 1])
 st.info('Job status: {}'.format(st.session_state['jobs_status']))
 if col_opt_5.button('Start or Resume Optimization', disabled=(st.session_state['jobs_status'] == 'running'),
                     use_container_width=True):
-    st.session_state['jobs_status'] = 'running'
-    app_functions.run_pse(pse_pars=pandas.DataFrame(st.session_state['opt_pars']),
-                          pse_dir=st.session_state['user_qcmd_opt_dir'],
-                          acq_func=opt_acq, optimizer=opt_optimizer, gpcam_iterations=gp_iter)
+    if st.session_state['jobs_status'] == 'idle':
+        st.session_state['gp_iterations'] = gp_iter
+        st.session_state['jobs_status'] = 'running'
+        app_functions.run_pse(pse_pars=pandas.DataFrame(st.session_state['opt_pars']),
+                              pse_dir=st.session_state['user_qcmd_opt_dir'],
+                              acq_func=opt_acq, optimizer=opt_optimizer, gpcam_iterations=gp_iter)
+        st.session_state['jobs_status'] = 'idle'
 
