@@ -1,4 +1,5 @@
 import copy
+import numpy as np
 import os
 import pandas
 import pickle
@@ -117,9 +118,10 @@ with (st.expander('Monitor')):
             st.text("Current measurements in progress:")
             st.dataframe(df_ci, hide_index=True)
 
-        res_path = os.path.join(st.session_state['user_qcmd_opt_dir'], 'results', 'gpCAMstream.pkl')
-        if os.path.exists(res_path):
-            with open(res_path, 'rb') as file:
+        res_path_gpcam = os.path.join(st.session_state['user_qcmd_opt_dir'], 'results', 'gpCAMstream.pkl')
+        res_path_grid = os.path.join(st.session_state['user_qcmd_opt_dir'], 'results', 'pse_grid_results.pkl')
+        if os.path.exists(res_path_gpcam):
+            with open(res_path_gpcam, 'rb') as file:
                 df_res_gpcam = pandas.DataFrame(pickle.load(file))
             st.text("Finished measurements:")
             st.dataframe(df_res_gpcam, hide_index=False, use_container_width=True)
@@ -127,6 +129,39 @@ with (st.expander('Monitor')):
             if st.session_state['jobs_status'] == 'running':
                 if df_res_gpcam.shape[0] >= st.session_state['gp_iterations']:
                     st.session_state['jobs_status'] = 'idle'
+        elif os.path.exists(res_path_grid):
+            with open(res_path_grid, 'rb') as file:
+                res_grid = pickle.load(file)
+            index_combinations = np.array(list(np.ndindex(res_grid.shape)))
+            values = res_grid.flatten()
+
+            opt_pars = pandas.DataFrame(st.session_state['opt_pars'])
+            opt_pars = opt_pars[opt_pars['optimize']]
+            name_pars = opt_pars['name'].tolist()
+
+            # List of exploration steps and axes
+            steplist = []
+            axes = []
+            for row in opt_pars.itertuples():
+                steps = int((row.upper_opt - row.lower_opt) / row.step_opt) + 1
+                steplist.append(steps)
+                axis = []
+                for i in range(steps):
+                    axis.append(row.lower_opt + i * row.step_opt)
+                axes.append(axis)
+            axes = np.array(axes)
+
+            index_combinations_mapped = np.stack(
+                [axes[j][index_combinations[:, j]] for j in range(index_combinations.shape[1])],
+                axis=-1
+            )
+
+            index_combinations = list(index_combinations_mapped)
+
+            df_res_grid = pandas.DataFrame(index_combinations, columns=[name_pars[i] for i in range(res_grid.ndim)])
+            df_res_grid["result"] = values
+            st.text("Measurement Results:")
+            st.dataframe(df_res_grid, hide_index=False, use_container_width=True)
 
         if st.session_state['jobs_status'] == 'idle':
             st.text("No measurements in progress")
@@ -196,6 +231,8 @@ if opt_optimizer == 'gpcam':
     opt_acq = col_opt_3.selectbox("GP acquisition function", ['variance', 'ucb', 'relative information entropy',
                                                               'probability of improvement'])
 
+parallel_meas = col_opt_4.number_input('Parallel measurements', min_value=1, value=1, step=1, format='%i')
+
 col_opt_5, col_opt_6 = st.columns([1, 1])
 st.info('Job status: {}'.format(st.session_state['jobs_status']))
 if col_opt_5.button('Start or Resume Optimization', disabled=(st.session_state['jobs_status'] == 'running'),
@@ -205,6 +242,7 @@ if col_opt_5.button('Start or Resume Optimization', disabled=(st.session_state['
         st.session_state['jobs_status'] = 'running'
         app_functions.run_pse(pse_pars=pandas.DataFrame(st.session_state['opt_pars']),
                               pse_dir=st.session_state['user_qcmd_opt_dir'],
-                              acq_func=opt_acq, optimizer=opt_optimizer, gpcam_iterations=gp_iter)
+                              acq_func=opt_acq, optimizer=opt_optimizer, gpcam_iterations=gp_iter,
+                              parallel_measurements=parallel_meas)
         st.session_state['jobs_status'] = 'idle'
 

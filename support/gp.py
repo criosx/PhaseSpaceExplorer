@@ -93,6 +93,7 @@ def save_plot_2d(x, y, z, xlabel, ylabel, color, filename='plot', zmin=None, zma
         zmin = np.amin(z)
     if zmax is None:
         zmax = np.amax(z)
+
     bounds = nice_interval(start=zmin, stop=zmax, numsteps=levels)
 
     font = {'family': 'sans-serif', 'weight': '200', 'size': 14}
@@ -194,6 +195,8 @@ class Gp:
                 self.results = np.full(self.steplist, np.nan)
                 self.variances = np.full(self.steplist, np.nan)
                 self.n_iter = np.zeros(self.steplist)
+                # do a first save of results
+                self.results_io(load=False)
             else:
                 self.results_io(load=True)
 
@@ -311,6 +314,7 @@ class Gp:
         while not it.finished:
             itindex = it.multi_index
             # run iteration if it is first time or the value in results is nan
+            print('index : {}'.format(itindex))
             invalid_result = np.isnan(self.results[itindex])
             insufficient_iterations = self.n_iter[itindex] < self.miniter
             # Do we need to work on this particular index?
@@ -321,12 +325,20 @@ class Gp:
 
             it.iternext()
             if (it.finished and work_on_it_list) or len(work_on_it_list) == self.parallel_measurements:
+                print('parallel measurements: {}'.format(self.parallel_measurements))
                 with concurrent.futures.ThreadPoolExecutor() as executor:
+                    print('submit jobs ...')
                     results = list(executor.map(self.work_on_iteration, work_on_it_list))
+                    print('receive jobs ...')
                 for i, entry in enumerate(results):
                     self.results[work_on_itindex_list[i]] = entry[0]
                     self.variances[work_on_itindex_list[i]] = entry[1]
+                    self.n_iter[work_on_itindex_list[i]] += 1
                 self.results_io()
+                path1 = path.join(self.spath, 'plots')
+                filename = path.join(path1, 'prediction_gpcam')
+                self.plot_arr(np.nan_to_num(self.results, nan=0), arr_variance=np.nan_to_num(self.variances, nan=0.0),
+                              filename=filename)
                 work_on_it_list = []
                 work_on_itindex_list = []
 
