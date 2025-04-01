@@ -1,7 +1,6 @@
 import os
 import pandas
 from pathlib import Path
-import shutil
 import streamlit as st
 
 # check if all working directories exist

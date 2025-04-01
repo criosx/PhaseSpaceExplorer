@@ -3,11 +3,7 @@ import numpy as np
 import os
 import pandas
 import pickle
-import shutil
 import streamlit as st
-import time
-import tkinter as tk
-from tkinter import filedialog
 import uuid
 
 import sys
