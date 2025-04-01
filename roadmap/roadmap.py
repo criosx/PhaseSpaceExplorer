@@ -1,3 +1,4 @@
+import copy
 import datetime
 import numpy as np
 import threading
@@ -204,21 +205,35 @@ def reduce_qcmd(meas: dict, control: dict) -> float:
 
 class ROADMAP_Gp(Gp):
 
-    def __init__(self, exp_par, lipids: list[str] = ['DOPC'], manager_address: str = MANAGER_ADDRESS, control_cycle: int = 3, storage_path=None, acq_func="variance", gpcam_iterations=50, gpcam_init_dataset_size=20, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam', parallel_measurements=1, resume=False, show_support_points=True):
+    def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50, gpcam_init_dataset_size=20, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam', parallel_measurements=1, resume=False, show_support_points=True):
         super().__init__(exp_par, storage_path, acq_func, gpcam_iterations, gpcam_init_dataset_size, gpcam_step, keep_plots, miniter, optimizer, parallel_measurements, resume, show_support_points)
 
-        # expected lipid list
-        self.lipids = lipids
+        # sort compounds into optimized and non-optimized
+        optimized_lipids = []
+        non_optimized_lipids = {}
+        for par in self.all_par.iterrows():
+            if par['type'] == 'compound':
+                if par['optimize']:
+                    optimized_lipids.append(par['name'])
+                else:
+                    non_optimized_lipids[par['name']] = par['value']
+
+        self.optimized_lipids = optimized_lipids
+        self.non_optimized_lipids = non_optimized_lipids
+
+        # get default value of concentration
+        concentration_index = self.all_par[self.all_par['name'] == 'lipid concentration'].index.values[0]
+        self.concentration = self.all_par.iloc[concentration_index]['value']
 
         # control measurement
         self.control: dict | None = None
         self.control_counter: int = 0
         
         # how often to collect control measurements
-        self.control_cycle = control_cycle
+        self.control_cycle = 3
 
         # connect to manager
-        self.manager = ManagerInterface(manager_address)
+        self.manager = ManagerInterface(MANAGER_ADDRESS)
         self.manager.initialize()
 
     def do_measurement(self, optpars: dict, it_label: str):
@@ -226,14 +241,23 @@ class ROADMAP_Gp(Gp):
         # Configure a particular problem with a set of N lipids. Then there are N-1 keywords describing the composition, plus 1 for the total concentration.
 
         # break out all non-lipid parameters
-        conc = optpars.pop('concentration')
+        conc = optpars.pop('lipid concentration', self.concentration)
 
-        # add up all fractions of lipids in optpars
-        sum_fractions = sum(v for k, v in optpars.values() if k in self.lipids)
+        # cycle through optimized lipids and determine absolute fraction. Each lipid is expressed as a fraction of the remainder
+        lipid_dict = copy.copy(self.non_optimized_lipids)        
+        sum_remainder = 0.0
+        for lipid in self.optimized_lipids:
+            new_fraction = optpars[lipid] * (1 - sum_remainder)
+            lipid_dict[lipid] = new_fraction
+            sum_remainder += new_fraction
 
-        # add back in the missing lipid
-        missing_lipid = next(k for k in optpars if k not in self.lipids)
-        optpars[missing_lipid] = 1 - sum_fractions
+        # fill in the remainder with the non-optimized lipids in the ratio given in the table
+        sum_non_optimized = sum(v for v in self.non_optimized_lipids.values())
+        for lipid, v in self.non_optimized_lipids.items():
+            lipid_dict[lipid] = v * (1 - sum_remainder) / sum_non_optimized
+
+        print('lipid_dict: ')
+        pprint(lipid_dict)
 
         # collect data, including control if necessary, and increment control counter
         new_control = (self.control_counter % self.control_cycle)==0 | (self.control is None)
