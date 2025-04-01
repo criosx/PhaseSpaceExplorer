@@ -7,12 +7,20 @@ from pprint import pprint
 from uuid import uuid4
 
 from .manager import MANAGER_ADDRESS, ManagerInterface
-from ..support.gp import Gp
+from ..gp import Gp
 
 from lh_manager.liquid_handler.bedlayout import Composition
 from lh_manager.liquid_handler.methods import BaseMethod
 from lh_manager.liquid_handler.roadmapmethods import ROADMAP_QCMD_MakeBilayer, ROADMAP_QCMD_RinseLoopInjectandMeasure, QCMDRecordTag
 from lh_manager.liquid_handler.samplelist import Sample, MethodList
+
+def extract_ids(sample: Sample, method_id: str):
+    method: BaseMethod = next(m for m in sample.stages['methods'].active if m.id == method_id)
+    task = method.tasks[-1]
+    subtask = task.task['tasks'][-1]
+    pprint(subtask)
+
+    return task.id, subtask.get('id', None)
 
 def collect_data(manager: ManagerInterface, lipids: dict[str, float], concentration: float, description: str, control: bool = True) -> tuple[float, float]:
     """Performs a bilayer formation measurement with a lipid composition and total lipid concentration.
@@ -31,14 +39,16 @@ def collect_data(manager: ManagerInterface, lipids: dict[str, float], concentrat
     """
 
     sample = Sample(name='PhaseSpaceExplorer',
-        description=datetime.datetime.now().strftime("%Y%M%D.%H:%M.%S") + ' ' + description,
+        description=datetime.datetime.now().strftime("%Y%M%D.%H:%M.%S") + ' ' + str(description),
         channel=0,
         stages={'methods': MethodList()})
+    
+    manager.new_sample(sample=sample)
     
     sum_fractions = sum(lipids.values())
     units = 'mg/mL'
     bilayer_composition = Composition(solvents=[manager.solvent_from_material('isopropanol', fraction=1)],
-                                      solutes=[manager.solute_from_material(name, frac * concentration / sum_fractions, units) for (name, frac) in lipids.items()])
+                                      solutes=[manager.solute_from_material(name, frac * concentration / sum_fractions, units) for (name, frac) in lipids.items() if frac > 0])
 
     buffer_composition = Composition(solvents=[manager.solvent_from_material('H2O', fraction=1)],
                                     solutes=[manager.solute_from_material('NaCl', concentration=0.15, units='M'),
@@ -114,21 +124,12 @@ def collect_data(manager: ManagerInterface, lipids: dict[str, float], concentrat
     if control:
         sample.stages['methods'].add(water_rinse)        
         sample.stages['methods'].add(buffer_control)
-        manager.new_sample(sample=sample)
+        manager.update_sample(sample)
         time.sleep(1)
         print('Starting first method...')
         manager.run_sample(sample.id)
 
-        def extract_ids(sample_id: str, method_id: str):
-            sample: Sample = Sample.model_validate(manager.samples[sample_id])
-            method: BaseMethod = next(m for m in sample.stages['methods'].active if m.id == method_id)
-            task = method.tasks[-1]
-            subtask = task.task['tasks'][-1]
-            pprint(subtask)
-
-            return task.id, subtask.get('id', None)
-
-        task_id, subtask_id = extract_ids(sample.id, buffer_control.id)
+        task_id, subtask_id = extract_ids(sample, buffer_control.id)
         # wait until measurement is complete and then read the result
         thread_result = {'result': None}
         monitor_thread = threading.Thread(target=manager.monitor_task, args=(task_id, thread_result), daemon=True)
@@ -153,7 +154,7 @@ def collect_data(manager: ManagerInterface, lipids: dict[str, float], concentrat
     time.sleep(1)
     manager.run_sample(sample.id)
 
-    task_id, subtask_id = extract_ids(sample.id, make_bilayer.id)
+    task_id, subtask_id = extract_ids(sample, make_bilayer.id)
     # wait until measurement is complete and then read the result
     thread_result = {'result': None}
     monitor_thread = threading.Thread(target=manager.monitor_task, args=(task_id, thread_result), daemon=True)
@@ -211,7 +212,7 @@ class ROADMAP_Gp(Gp):
         # sort compounds into optimized and non-optimized
         optimized_lipids = []
         non_optimized_lipids = {}
-        for par in self.all_par.iterrows():
+        for _, par in self.all_par.iterrows():
             if par['type'] == 'compound':
                 if par['optimize']:
                     optimized_lipids.append(par['name'])
@@ -233,7 +234,7 @@ class ROADMAP_Gp(Gp):
         self.control_cycle = 3
 
         # connect to manager
-        self.manager = ManagerInterface(MANAGER_ADDRESS)
+        self.manager = ManagerInterface(address=MANAGER_ADDRESS)
         self.manager.initialize()
 
     def do_measurement(self, optpars: dict, it_label: str):
