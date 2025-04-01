@@ -12,10 +12,12 @@ from lh_manager.liquid_handler.samplecontainer import SampleContainer
 MANAGER_ADDRESS = 'http://localhost:5001'
 
 class ManagerInterface:
-    address: str = MANAGER_ADDRESS
     samples: dict[str, dict] = {}
     sample_ids: list[str] = []
     materials: dict[str, Material] = {}
+
+    def __init__(self, address: str = MANAGER_ADDRESS):
+        self.address = address
 
     def initialize(self):
         self.load_materials()
