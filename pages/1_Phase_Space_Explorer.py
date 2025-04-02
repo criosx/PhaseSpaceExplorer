@@ -194,6 +194,7 @@ def parameter_input():
             df_opt_pars,
             key=st.session_state['widget_key'],
             disabled=["_index"],
+            num_rows='dynamic',
             column_order=["name", "type", "value", "optimize", "lower_opt", "upper_opt",
                           "step_opt"],
             column_config={
