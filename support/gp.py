@@ -142,6 +142,8 @@ class Gp:
         self.gpcam_init_dataset_size = gpcam_init_dataset_size
         self.gpcam_step = gpcam_step
         self.gpiteration = 0
+        # global flag for an occuring measurement failure
+        self.measurement_failure = False
         self.keep_plots = keep_plots
         self.miniter = miniter
         self.optimizer = optimizer
@@ -254,17 +256,18 @@ class Gp:
             results = list(executor.map(self.work_on_iteration, argument_list))
 
         for i, entry in enumerate(data):
-            entry["y_data"] = results[i][0]
-            entry['noise variance'] = results[i][1]
-            # entry["cost"]  =
-            new_row = {'parameter names': self.exp_par['name'].to_list(), 'position': entry['x_data'],
-                       'value': results[i][0], 'variance': results[i][1]}
-            self.gpCAMstream.loc[len(self.gpCAMstream)] = new_row
-
-            self.results_io()
-
+            # TODO: Not sure how GPCAM handles when no results are provided because the measurement failed.
+            if results[i][0] is not None:
+                entry["y_data"] = results[i][0]
+                entry['noise variance'] = results[i][1]
+                # entry["cost"]  =
+                new_row = {'parameter names': self.exp_par['name'].to_list(), 'position': entry['x_data'],
+                           'value': results[i][0], 'variance': results[i][1]}
+                self.gpCAMstream.loc[len(self.gpCAMstream)] = new_row
+                self.results_io()
+            else:
+                self.measurement_failure = True
         self.worked_on_iterations_delete()
-
         return data
 
     def gpcam_prediction(self, my_ae):
@@ -311,7 +314,7 @@ class Gp:
         it = np.nditer(self.results, flags=['multi_index'])
         work_on_it_list = []
         work_on_itindex_list = []
-        while not it.finished:
+        while not it.finished and not self.measurement_failure:
             itindex = it.multi_index
             # run iteration if it is first time or the value in results is nan
             print('index : {}'.format(itindex))
@@ -320,7 +323,7 @@ class Gp:
             # Do we need to work on this particular index?
             if invalid_result or insufficient_iterations:
                 bWorkedOnIndex = True
-                work_on_it_list.append((it, None, None))
+                work_on_it_list.append((it.copy(), None, None))
                 work_on_itindex_list.append(itindex)
 
             it.iternext()
@@ -331,9 +334,12 @@ class Gp:
                     results = list(executor.map(self.work_on_iteration, work_on_it_list))
                     print('receive jobs ...')
                 for i, entry in enumerate(results):
-                    self.results[work_on_itindex_list[i]] = entry[0]
-                    self.variances[work_on_itindex_list[i]] = entry[1]
-                    self.n_iter[work_on_itindex_list[i]] += 1
+                    if entry[0] is not None:
+                        self.results[work_on_itindex_list[i]] = entry[0]
+                        self.variances[work_on_itindex_list[i]] = entry[1]
+                        self.n_iter[work_on_itindex_list[i]] += 1
+                    else:
+                        self.measurement_failure = True
                 self.results_io()
                 path1 = path.join(self.spath, 'plots')
                 filename = path.join(path1, 'prediction_gpcam')
@@ -401,10 +407,14 @@ class Gp:
     def run(self):
         if self.optimizer == 'grid':
             self.run_optimization_grid()
-        if self.optimizer == 'gpcam':
+        elif self.optimizer == 'gpcam':
             self.run_optimization_gpcam()
         else:
             raise NotImplementedError('Unknown optimization method')
+
+        print('------------------GP FINISHED---------------')
+
+        return not self.measurement_failure
 
     def run_optimization_gpcam(self):
         # Using the gpCAM global optimizer, follows the example from the gpCAM website
@@ -467,7 +477,7 @@ class Gp:
             self.results_io()
             self.gpcam_prediction(self.my_ae)
 
-        while len(self.my_ae.x_data) < self.gpcam_iterations:
+        while len(self.my_ae.x_data) < self.gpcam_iterations and not self.measurement_failure:
             print("length of the dataset: ", len(self.my_ae.x_data))
             self.my_ae.train(method="global", max_iter=10000)  # or not, or both, choose "global","local" and "hgdl"
             # update hyperparameters in case they are optimized asynchronously
@@ -580,7 +590,13 @@ class Gp:
         # only one argument is passed in the function to make it easier to work with
         # concurrent.futures.ThreadPoolExecutor()
         optpars, itlabel = self.yield_optpars_label(arguments)
-        result, variance = self.do_measurement(optpars, itlabel)
+        print(itlabel, optpars)
+        try:
+            result, variance = self.do_measurement(optpars, itlabel)
+        except RuntimeError as e:
+            print('Measurement failed outside of GP {}'.format(e))
+            result = None
+            variance = None
 
         return result, variance
 

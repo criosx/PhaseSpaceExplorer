@@ -3,7 +3,9 @@ import numpy as np
 import os
 import pandas
 import pickle
+import shutil
 import streamlit as st
+import threading
 import uuid
 
 import sys
@@ -16,6 +18,8 @@ if 'widget_key' not in st.session_state:
     st.session_state['widget_key'] = str(uuid.uuid4())
 if 'gp_iterations' not in st.session_state:
     st.session_state['gp_iterations'] = 50
+if 'measurement_process' not in st.session_state:
+    st.session_state['measurement_process'] = None
 
 
 # ------------ Functionality -----------
@@ -26,6 +30,31 @@ def activate_project(project_name):
     st.session_state['active_project'] = project_name
     print('trying to load from {}'.format(project_dir))
     load_session_state(project_dir)
+
+
+def clear_project_data():
+    def _rmdir(directory_path):
+        # Check if the directory exists
+        if not os.path.exists(directory_path):
+            print(f"The directory '{directory_path}' does not exist.")
+            return
+
+        for entry in os.scandir(directory_path):
+            try:
+                if entry.is_file():
+                    os.remove(entry.path)  # Remove the file
+                elif entry.is_dir():
+                    shutil.rmtree(entry.path)  # Remove the subdirectory and its contents
+            except Exception as e:
+                print(f"Failed to delete {entry.path}: {e}")
+
+    project_dir = st.session_state['user_qcmd_opt_dir']
+    if project_dir is None:
+        return
+    result_dir = os.path.join(project_dir, 'results')
+    plots_dir = os.path.join(project_dir, 'plots')
+    _rmdir(result_dir)
+    _rmdir(plots_dir)
 
 
 def create_new_project(project_name):
@@ -61,46 +90,9 @@ def load_session_state(folder):
         print(st.session_state['opt_pars_original'])
 
 
-def save_session_state(folder):
-    # save only pse parameters so far
-    file_path = os.path.join(folder, 'pse_parameters.pkl')
-    with open(file_path, 'wb') as f:
-        pickle.dump(st.session_state['opt_pars'], f)
-
-
-@st.fragment
-def parameter_input():
-    if st.session_state['active_project'] is not None:
-        df_opt_pars = copy.deepcopy(st.session_state['opt_pars_original'])
-        parameters_edited = st.data_editor(
-            df_opt_pars,
-            key=st.session_state['widget_key'],
-            disabled=["_index"],
-            column_order=["name", "type", "value", "optimize", "lower_opt", "upper_opt",
-                          "step_opt"],
-            column_config={
-                'name': 'name',
-                'type': st.column_config.SelectboxColumn(
-                    "type",
-                    help="Variable type",
-                    options=['compound', 'parameter']
-                ),
-                'lower_opt': 'lower opt',
-                'upper_opt': 'upper',
-                'optimize': 'optimize',
-                'step_opt': 'step'
-            }
-        )
-        st.session_state['opt_pars'] = parameters_edited
-        save_session_state(st.session_state['user_qcmd_opt_dir'])
-
-
-# ------------  GUI -------------------
-st.write("""
-# Job Monitor
-""")
-
-with (st.expander('Monitor')):
+@st.fragment(run_every=60)
+def monitor():
+    st.info('Job status: {}'.format(st.session_state['jobs_status']))
 
     # List to store paths to .png files
     png_files = []
@@ -159,8 +151,8 @@ with (st.expander('Monitor')):
             st.text("Measurement Results:")
             st.dataframe(df_res_grid, hide_index=False, use_container_width=True)
 
-        if st.session_state['jobs_status'] == 'idle':
-            st.text("No measurements in progress")
+        else:
+            st.text("No results to show.")
 
         figure_path = os.path.join(st.session_state['user_qcmd_opt_dir'], 'plots')
         # Iterate over all entries in the directory
@@ -176,6 +168,58 @@ with (st.expander('Monitor')):
 
     if st.button('Update job monitor'):
         pass
+
+
+def run_measurment(kwargs):
+    success = app_functions.run_pse(**kwargs)
+
+    if success:
+        st.session_state['job_status'] = 'idle'
+    else:
+        st.session_state['job_status'] = 'failed measurement'
+
+
+def save_session_state(folder):
+    # save only pse parameters so far
+    file_path = os.path.join(folder, 'pse_parameters.pkl')
+    with open(file_path, 'wb') as f:
+        pickle.dump(st.session_state['opt_pars'], f)
+
+
+@st.fragment
+def parameter_input():
+    if st.session_state['active_project'] is not None:
+        df_opt_pars = copy.deepcopy(st.session_state['opt_pars_original'])
+        parameters_edited = st.data_editor(
+            df_opt_pars,
+            key=st.session_state['widget_key'],
+            disabled=["_index"],
+            column_order=["name", "type", "value", "optimize", "lower_opt", "upper_opt",
+                          "step_opt"],
+            column_config={
+                'name': 'name',
+                'type': st.column_config.SelectboxColumn(
+                    "type",
+                    help="Variable type",
+                    options=['compound', 'parameter']
+                ),
+                'lower_opt': 'lower opt',
+                'upper_opt': 'upper',
+                'optimize': 'optimize',
+                'step_opt': 'step'
+            }
+        )
+        st.session_state['opt_pars'] = parameters_edited
+        save_session_state(st.session_state['user_qcmd_opt_dir'])
+
+
+# ------------  GUI -------------------
+st.write("""
+# Job Monitor
+""")
+
+with (st.expander('Monitor')):
+    monitor()
 
 st.write("""
 # Setup New Phase Space Exploration
@@ -193,15 +237,28 @@ with st.expander('Setup'):
         if project_dir != st.session_state['user_qcmd_opt_dir']:
             activate_project(project)
             st.session_state['widget_key'] = str(uuid.uuid4())
+            st.rerun()
 
     new_project = st.text_input("... or create a new project directory.", placeholder="Project name ...")
     if new_project != '' and new_project not in project_list:
         create_new_project(new_project)
         st.session_state['widget_key'] = str(uuid.uuid4())
+        st.rerun()
 
     if st.session_state['user_qcmd_opt_dir'] is not None:
         st.info("Project directory: {}".format(st.session_state['user_qcmd_opt_dir']))
         st.info("Active project: {}".format(st.session_state['active_project']))
+
+        if st.button('Clear Project Data', disabled=(st.session_state['jobs_status'] == 'running'),
+                     use_container_width=True):
+            clear_project_data()
+            st.rerun()
+
+        if st.session_state['jobs_status'] == 'running':
+            if st.button('Set status to idle', use_container_width=True):
+                st.session_state['jobs_status'] = 'idle'
+                st.rerun()
+
     else:
         st.info("No active project")
 
@@ -217,9 +274,22 @@ st.write("""
 # Run or Continue Optimization
 """)
 
-col_opt_3, col_opt_4 = st.columns([1, 1])
+res_path_gpcam = os.path.join(st.session_state['user_qcmd_opt_dir'], 'results', 'gpCAMstream.pkl')
+res_path_grid = os.path.join(st.session_state['user_qcmd_opt_dir'], 'results', 'pse_grid_results.pkl')
+if os.path.exists(res_path_gpcam):
+    present_optimizer = 'gpcam'
+elif os.path.exists(res_path_grid):
+    present_optimizer = 'grid'
+else:
+    present_optimizer = None
 
-opt_optimizer = col_opt_3.selectbox("optimizer", ['gpcam', 'grid', ])
+col_opt_3, col_opt_4 = st.columns([1, 1])
+if present_optimizer is None:
+    opt_optimizer = col_opt_3.selectbox("optimizer", ['gpcam', 'grid', ])
+else:
+    col_opt_3.text("optimizer: {}".format(present_optimizer))
+    opt_optimizer = present_optimizer
+
 opt_acq = 'variance'
 gp_iter = 50
 if opt_optimizer == 'gpcam':
@@ -230,15 +300,22 @@ if opt_optimizer == 'gpcam':
 parallel_meas = col_opt_4.number_input('Parallel measurements', min_value=1, value=1, step=1, format='%i')
 
 col_opt_5, col_opt_6 = st.columns([1, 1])
-st.info('Job status: {}'.format(st.session_state['jobs_status']))
+
 if col_opt_5.button('Start or Resume Optimization', disabled=(st.session_state['jobs_status'] == 'running'),
                     use_container_width=True):
     if st.session_state['jobs_status'] == 'idle':
         st.session_state['gp_iterations'] = gp_iter
         st.session_state['jobs_status'] = 'running'
-        app_functions.run_pse(pse_pars=pandas.DataFrame(st.session_state['opt_pars']),
-                              pse_dir=st.session_state['user_qcmd_opt_dir'],
-                              acq_func=opt_acq, optimizer=opt_optimizer, gpcam_iterations=gp_iter,
-                              parallel_measurements=parallel_meas)
-        st.session_state['jobs_status'] = 'idle'
+        kwargs = {'pse_pars': pandas.DataFrame(st.session_state['opt_pars']),
+                  'pse_dir': st.session_state['user_qcmd_opt_dir'],
+                  'acq_func': opt_acq,
+                  'optimizer': opt_optimizer,
+                  'gpcam_iterations': gp_iter,
+                  'parallel_measurements': parallel_meas
+                  }
+        thread = threading.Thread(target=app_functions.run_pse, kwargs=kwargs)
+        st.session_state['job_status'] = 'running'
+        thread.start()
+        st.rerun()
+
 

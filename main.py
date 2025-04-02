@@ -40,7 +40,4 @@ df_folders
 
 st.divider()
 
-"""
-*Contact: frank.heinrich@nist.gov*
-"""
 
