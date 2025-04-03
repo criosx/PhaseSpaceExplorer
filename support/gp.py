@@ -130,7 +130,7 @@ def save_plot_2d(x, y, z, xlabel, ylabel, color, filename='plot', zmin=None, zma
 class Gp:
     def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50,
                  gpcam_init_dataset_size=20, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam',
-                 parallel_measurements=1, resume=False, show_support_points=True):
+                 parallel_measurements=1, resume=False, show_support_points=True, project_name=''):
         """
         Initialize the GP class.
         :param exp_par: (Pandas dataframe) Exploration parameter dataframe with rows: "name", "type", "value",
@@ -152,6 +152,7 @@ class Gp:
             self.optimizer = 'gpcam'
         self.parallel_measurements = parallel_measurements
         self.show_support_points = show_support_points
+        self.project_name = project_name
 
         self.my_ae = None
 
