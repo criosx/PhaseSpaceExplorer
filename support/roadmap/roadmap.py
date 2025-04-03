@@ -208,7 +208,7 @@ def collect_data(manager: ManagerInterface, lipids: dict[str, float], concentrat
     # parse and combine the results
     return {'control': control_result, 'measure': measure_result}
 
-def reduce_qcmd(meas: dict, control: dict) -> float:
+def reduce_qcmd(meas: dict, control: dict, harmonic_power: float = 1) -> float:
     """Data reduction for measurement and control. Performs the following steps:
         o Calculates the frequency difference for each harmonic
         o Normalizes each frequency difference to the harmonic number
@@ -218,6 +218,7 @@ def reduce_qcmd(meas: dict, control: dict) -> float:
     Args:
         meas (dict): measurement result dictionary
         control (dict): control result dictionary
+        harmonic_power (float): exponent to normalize frequencies (1 for most applications, 1/2 if looking at solvent properties)
 
     Returns:
         tuple(float, float): normalized frequency difference, variance
@@ -233,8 +234,8 @@ def reduce_qcmd(meas: dict, control: dict) -> float:
     diffs = []
     diff_errs = []
     for imf, icf, h in zip(mtag['f_averages'], ctag['f_averages'], harmonics):
-        diffs.append((imf[0] - icf[0]) / h)
-        diff_errs.append(np.sqrt(imf[2] ** 2 + icf[2] ** 2) / h)
+        diffs.append((imf[0] - icf[0]) / (h ** harmonic_power))
+        diff_errs.append(np.sqrt(imf[2] ** 2 + icf[2] ** 2) / (h ** harmonic_power))
 
     diffs = np.array(diffs)[1:]
     diff_errs = np.array(diff_errs)[1:]
@@ -425,8 +426,10 @@ class ROADMAP_Gp(Gp):
         description = datetime.datetime.now().strftime("%Y%m%d %H.%M.%S")
         if 'ipa_fraction' in optpars:
            res = collect_wateripa(self.manager, optpars['ipa_fraction'], sample_name, description, control=new_control)
+           harmonic_power = 0.5
         else:
             res = collect_data(self.manager, lipid_dict, conc, sample_name, description, control=new_control)
+            harmonic_power = 1.0
         self.control_counter += 1
 
         # replace current value of control if applicable
@@ -434,7 +437,7 @@ class ROADMAP_Gp(Gp):
             self.control = res['control']
 
         # reduce data with most recent control
-        results, variance = reduce_qcmd(res['measure'], self.control)
+        results, variance = reduce_qcmd(res['measure'], self.control, harmonic_power)
 
         return results, variance
 
