@@ -1,8 +1,8 @@
-import copy
+import concurrent.futures
 import datetime
 import numpy as np
-import threading
 import time
+
 from pprint import pprint
 from uuid import uuid4
 
@@ -43,9 +43,12 @@ def execute_measurement(manager: ManagerInterface, sample: Sample, measure_metho
     print(f'\tSubtask id: {subtask_id}')
     # wait until measurement is complete and then read the result
     thread_result = {'result': None}
-    monitor_thread = threading.Thread(target=manager.monitor_task, args=(task_id, thread_result), daemon=True)
-    monitor_thread.start()
-    monitor_thread.join()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(manager.monitor_task,task_id, thread_result)
+        concurrent.futures.thread._threads_queues.clear()
+    
+        future.result()
+
     if thread_result['result'].get('success', None) is not None:
         return manager.get_task_result(task_id, subtask_id)
     else:
@@ -279,7 +282,7 @@ def collect_wateripa(manager: ManagerInterface, ipa_fraction: float, sample_name
                                                       Is_Organic=False,
                                                       Use_Bubble_Sensors=True,
                                                       Equilibration_Time=3,
-                                                      Measurement_Time=5)
+                                                      Measurement_Time=3)
     
     mix_well = InferredWellLocation(rack_id='Mix', expected_composition=mix)
     water_ipa_mix = Formulation(id=str(uuid4()),
@@ -304,7 +307,7 @@ def collect_wateripa(manager: ManagerInterface, ipa_fraction: float, sample_name
                         )
 
     water_ipa_measure = QCMDRecordTag(id=str(uuid4()),
-                                      record_time=5 * 60,
+                                      record_time=3 * 60,
                                 sleep_time=3 * 60,
                                 tag_name=repr(mix))
 

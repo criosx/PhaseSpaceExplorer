@@ -1,5 +1,6 @@
 """Interface for lh_manager (github.com/roadmap-automation/lh_manager)"""
 
+import json
 import requests
 import time
 from urllib.parse import urljoin
@@ -71,10 +72,15 @@ class ManagerInterface:
     def get_task_complete(self, task_id: str) -> str | dict:
 
         response = requests.get(urljoin(self.address, '/autocontrol/GetTaskStatus'), json={'task_id': task_id})
+        try:
+            resp = response.json()
+        except json.JSONDecodeError:
+            return {'error': 'json could not be decoded'}
+        
         if not response.ok:
-            return {'error': response.json()}
+            return {'error': resp}
 
-        if response.json().get('queue', '') == 'history':
+        if resp.get('queue', '') == 'history':
             return {'success': 'complete'}
         
         return 'incomplete'
