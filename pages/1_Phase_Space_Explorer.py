@@ -197,6 +197,7 @@ def parameter_input():
         parameters_edited = st.data_editor(
             df_opt_pars,
             key=st.session_state['widget_key'],
+            num_rows='dynamic',
             disabled=["_index"],
             num_rows='dynamic',
             column_order=["name", "type", "value", "optimize", "lower_opt", "upper_opt",
@@ -312,7 +313,8 @@ if col_opt_5.button('Start or Resume Optimization', disabled=(st.session_state['
                   'acq_func': opt_acq,
                   'optimizer': opt_optimizer,
                   'gpcam_iterations': gp_iter,
-                  'parallel_measurements': parallel_meas
+                  'parallel_measurements': parallel_meas,
+                  'project_name': st.session_state['active_project']
                   }
         thread = threading.Thread(target=app_functions.run_pse, kwargs=kwargs)
         st.session_state['job_status'] = 'running'

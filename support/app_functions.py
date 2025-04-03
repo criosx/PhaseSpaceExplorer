@@ -1,7 +1,7 @@
 from . import gp
 from .roadmap.roadmap import ROADMAP_Gp
 
-def run_pse(pse_pars, pse_dir, acq_func="variance", optimizer='gpcam', gpcam_iterations=50, parallel_measurements=1):
+def run_pse(pse_pars, pse_dir, acq_func="variance", optimizer='gpcam', gpcam_iterations=50, parallel_measurements=1, project_name=''):
     """
     Initializes and runs the Gaussian Process phase space exploration, PSE (also supports grid search). Results are
     saved in the pse_dir directory. Returns a success flag.
@@ -11,10 +11,11 @@ def run_pse(pse_pars, pse_dir, acq_func="variance", optimizer='gpcam', gpcam_ite
     :param optimizer: (str) PSE optimization algorithm (gpcam or grid)
     :param gpcam_iterations: (int) number of Gaussian Process iterations
     :param parallel_measurements: (int) number of parallel measurements per iteration
+    :param project_name: (str) project name
     :return: (Bool) success flag.
     """
     gpo = ROADMAP_Gp(exp_par=pse_pars, storage_path=pse_dir, acq_func=acq_func, optimizer=optimizer,
-                gpcam_iterations=gpcam_iterations, parallel_measurements=parallel_measurements, resume=True)
+                gpcam_iterations=gpcam_iterations, parallel_measurements=parallel_measurements, resume=True, project_name=project_name)
     # success flag currently unused
     success = gpo.run()
 
