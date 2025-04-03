@@ -34,20 +34,20 @@ class ManagerInterface:
         samples: list[dict] = requests.get(urljoin(self.address, '/GUI/GetSamples/')).json()['samples']
 
         self.samples = {s['id']: s for s in samples['samples']}
+        #SampleContainer.model_validate(samples)
 
-        SampleContainer.model_validate(samples)
+    def get_sample_ids(self) -> list[str]:
 
-    def get_sample_ids(self) -> str:
+        return list(self.samples.keys())
 
-        return [s['id'] for s in self.samples.values()]
-
-    def new_sample(self, sample: Sample) -> str:
+    def new_sample(self, sample: Sample) -> Sample:
 
         if sample not in self.sample_ids:
-            self.update_sample(sample)
-            self.get_sample_ids()
+            _, sample = self.update_sample(sample)
+
+        return sample
         
-    def update_sample(self, sample: Sample) -> str:
+    def update_sample(self, sample: Sample) -> tuple[str, Sample]:
 
         response: dict[str, str] = requests.post(urljoin(self.address, '/GUI/UpdateSample'), data=sample.model_dump_json()).json()
 
@@ -55,14 +55,18 @@ class ManagerInterface:
 
         self.get_samples()
 
-        return list(response.values())[0]
-    
-    def run_sample(self, sample_id: str) -> str:
+        return list(response.values())[0], self.rehydrate_sample(sample.id)
+
+    def rehydrate_sample(self, sample_id: str) -> Sample:
+
+        return Sample.model_validate(self.samples[sample_id])
+
+    def run_sample(self, sample_id: str) -> tuple[str, Sample]:
 
         sample = self.samples[sample_id]
         response: dict = requests.post(urljoin(self.address, '/GUI/RunSample/'), json={'name': sample['name'], 'id': sample['id'], 'uuid': sample.get('uuid', None), 'slotID': None, 'stage': ['methods']}).json()
         self.get_samples()
-        return response
+        return response, self.rehydrate_sample(sample_id)
 
     def get_task_complete(self, task_id: str) -> str | dict:
 
