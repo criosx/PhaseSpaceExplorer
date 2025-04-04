@@ -74,6 +74,7 @@ def collect_data(manager: ManagerInterface, lipids: dict[str, float], concentrat
     sum_fractions = sum(lipids.values())
     units = 'mg/mL'
     water = Composition(solvents=[manager.solvent_from_material('H2O', fraction=1)], solutes=[])
+    isopropanol = Composition(solvents=[manager.solvent_from_material('isopropanol', fraction=1)], solutes=[])
     bilayer_composition = Composition(solvents=[manager.solvent_from_material('isopropanol', fraction=1)],
                                       solutes=[manager.solute_from_material(name, frac * concentration / sum_fractions, units) for (name, frac) in lipids.items() if frac > 0])
 
@@ -88,27 +89,27 @@ def collect_data(manager: ManagerInterface, lipids: dict[str, float], concentrat
                                                       Extra_Volume=0.1,
                                                       Is_Organic=True,
                                                       Use_Bubble_Sensors=True,
-                                                      Equilibration_Time=0,
-                                                      Measurement_Time=0)
+                                                      Equilibration_Time=2,
+                                                      Measurement_Time=1)
 
-    isopropanol_rinse = ROADMAP_QCMD_RinseLoopInjectandMeasure(Target_Composition=Composition(solvents=[manager.solvent_from_material('isopropanol', fraction=1)], solutes=[]),
+    isopropanol_rinse = ROADMAP_QCMD_RinseLoopInjectandMeasure(Target_Composition=isopropanol,
                                                       Volume=1,
                                                       Injection_Flow_Rate=2,
                                                       Extra_Volume=0.1,
                                                       Is_Organic=True,
                                                       Use_Bubble_Sensors=True,
-                                                      Equilibration_Time=0,
-                                                      Measurement_Time=0)
+                                                      Equilibration_Time=2,
+                                                      Measurement_Time=1)
     
-    water_rinse = ROADMAP_QCMD_RinseLoopInjectandMeasure(Target_Composition=Composition(solvents=[manager.solvent_from_material('H2O', fraction=1)], solutes=[]),
+    water_rinse = ROADMAP_QCMD_RinseLoopInjectandMeasure(Target_Composition=water,
                                                       Volume=1,
                                                       Injection_Flow_Rate=2,
                                                       Extra_Volume=0.1,
                                                       Is_Organic=False,
                                                       Use_Bubble_Sensors=True,
-                                                      Equilibration_Time=0,
-                                                      Measurement_Time=0)
-    """
+                                                      Equilibration_Time=2,
+                                                      Measurement_Time=1)
+    
     buffer_control = ROADMAP_QCMD_RinseLoopInjectandMeasure(id=str(uuid4()),
                                                             Target_Composition=buffer_composition,
                                                       Volume=1,
@@ -116,30 +117,10 @@ def collect_data(manager: ManagerInterface, lipids: dict[str, float], concentrat
                                                       Extra_Volume=0.1,
                                                       Is_Organic=False,
                                                       Use_Bubble_Sensors=True,
-                                                      Equilibration_Time=0.1,
-                                                      Measurement_Time=0.5)
-    """
-    buffer_control = ROADMAP_QCMD_RinseDirectInjectandMeasure(id=str(uuid4()),
-                                                            Target_Composition=water,
-                                                      Volume=1,
-                                                      Injection_Flow_Rate=2,
-                                                      Extra_Volume=0.1,
-                                                      Is_Organic=False,
-                                                      Use_Bubble_Sensors=True,
-                                                      Equilibration_Time=0.1,
-                                                      Measurement_Time=0.5)
-
-                                                      
-    make_bilayer = ROADMAP_QCMD_RinseDirectInjectandMeasure(id=str(uuid4()),
-                                                            Target_Composition=water,
-                                                      Volume=1,
-                                                      Injection_Flow_Rate=2,
-                                                      Extra_Volume=0.1,
-                                                      Is_Organic=False,
-                                                      Use_Bubble_Sensors=True,
-                                                      Equilibration_Time=0.1,
-                                                      Measurement_Time=0.5)
-    
+                                                      Equilibration_Time=5,
+                                                      Measurement_Time=3)
+                                                          
+   
     second_water_rinse = ROADMAP_QCMD_RinseLoopInjectandMeasure(
                                                       Target_Composition=water,
                                                       Volume=1,
@@ -147,12 +128,12 @@ def collect_data(manager: ManagerInterface, lipids: dict[str, float], concentrat
                                                       Extra_Volume=0.1,
                                                       Is_Organic=False,
                                                       Use_Bubble_Sensors=True,
-                                                      Equilibration_Time=0,
-                                                      Measurement_Time=0)
-    """
+                                                      Equilibration_Time=2,
+                                                      Measurement_Time=1)
+    
     make_bilayer = ROADMAP_QCMD_MakeBilayer(id=str(uuid4()),
                                             Bilayer_Composition=bilayer_composition,
-                                            Bilayer_Solvent=Composition(solvents=[manager.solvent_from_material('isopropanol', fraction=1)]),
+                                            Bilayer_Solvent=isopropanol,
                                             Use_Rinse_System_for_Solvent=True,
                                             Lipid_Injection_Volume=1.0,
                                             Buffer_Composition=buffer_composition,
@@ -162,9 +143,9 @@ def collect_data(manager: ManagerInterface, lipids: dict[str, float], concentrat
                                             Rinse_Volume=2.0,
                                             Flow_Rate=3.0,
                                             Exchange_Flow_Rate=0.1,
-                                            Equilibration_Time=3.0,
-                                            Measurement_Time=5.0)
-    """
+                                            Equilibration_Time=5.0,
+                                            Measurement_Time=3.0)
+    
     # Initiate sample
     sample = Sample(name=sample_name,
         description=repr(bilayer_composition) + ', started ' + description,
@@ -175,16 +156,16 @@ def collect_data(manager: ManagerInterface, lipids: dict[str, float], concentrat
 
     # set up running protocol. Note that measurement methods must have an ID
     methods = [
-        #ethanol_rinse,
-        #isopropanol_rinse
+        ethanol_rinse,
+        isopropanol_rinse
         ]
     if control:
         methods += [
-            #water_rinse,
+            water_rinse,
             buffer_control
         ]
     methods += [
-        #second_water_rinse,
+        second_water_rinse,
         make_bilayer
     ]
 
@@ -405,7 +386,7 @@ class ROADMAP_Gp(Gp):
         # Configure a particular problem with a set of N lipids. Then there are N-1 keywords describing the composition, plus 1 for the total concentration.
 
         # break out all non-lipid parameters
-        conc = optpars.pop('lipid concentration', self.concentration)
+        conc = optpars.get('lipid concentration', self.concentration)
 
         # cycle through optimized lipids and determine absolute fraction. Each lipid is expressed as a fraction of the remainder
         lipid_dict = {}
