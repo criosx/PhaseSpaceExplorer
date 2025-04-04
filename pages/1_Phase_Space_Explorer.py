@@ -127,6 +127,10 @@ def monitor():
             opt_pars = opt_pars[opt_pars['optimize']]
             name_pars = opt_pars['name'].tolist()
 
+            if opt_pars.empty:
+                st.info('No optimized parameters.')
+                return
+
             # List of exploration steps and axes
             steplist = []
             axes = []
@@ -238,13 +242,11 @@ with st.expander('Setup'):
         if project_dir != st.session_state['user_qcmd_opt_dir']:
             activate_project(project)
             st.session_state['widget_key'] = str(uuid.uuid4())
-            st.rerun()
 
     new_project = st.text_input("... or create a new project directory.", placeholder="Project name ...")
     if new_project != '' and new_project not in project_list:
         create_new_project(new_project)
         st.session_state['widget_key'] = str(uuid.uuid4())
-        st.rerun()
 
     if st.session_state['user_qcmd_opt_dir'] is not None:
         st.info("Project directory: {}".format(st.session_state['user_qcmd_opt_dir']))
@@ -253,12 +255,10 @@ with st.expander('Setup'):
         if st.button('Clear Project Data', disabled=(st.session_state['jobs_status'] == 'running'),
                      use_container_width=True):
             clear_project_data()
-            st.rerun()
 
         if st.session_state['jobs_status'] == 'running':
             if st.button('Set status to idle', use_container_width=True):
                 st.session_state['jobs_status'] = 'idle'
-                st.rerun()
 
     else:
         st.info("No active project")
