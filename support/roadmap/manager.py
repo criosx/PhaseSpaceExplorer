@@ -1,14 +1,17 @@
 """Interface for lh_manager (github.com/roadmap-automation/lh_manager)"""
 
+import concurrent.futures
 import json
 import requests
 import time
+
+from pprint import pprint
 from urllib.parse import urljoin
 
 from lh_manager.material_db.db import Material
 from lh_manager.liquid_handler.bedlayout import Solvent, Solute
+from lh_manager.liquid_handler.methods import BaseMethod
 from lh_manager.liquid_handler.samplelist import Sample
-from lh_manager.liquid_handler.samplecontainer import SampleContainer
 
 MANAGER_ADDRESS = 'http://localhost:5001'
 
@@ -61,6 +64,13 @@ class ManagerInterface:
     def rehydrate_sample(self, sample_id: str) -> Sample:
 
         return Sample.model_validate(self.samples[sample_id])
+    
+    def archive_sample(self, sample: Sample) -> dict:
+
+        response: dict[str, str] = requests.post(urljoin(self.address, '/GUI/ArchiveandRemoveSample/'), data=json.dumps(dict(id=sample.id))).json()
+        self.get_samples()
+
+        return response
 
     def run_sample(self, sample_id: str) -> tuple[str, Sample]:
 
@@ -101,6 +111,33 @@ class ManagerInterface:
         response: dict = requests.get(urljoin(self.address, '/autocontrol/GetTaskResult'), json=data).json()
 
         return response
+
+    def wait_for_result(self, sample: Sample, measure_method_id: str) -> dict:
+
+        # extract task_id and subtask_id for measurement task (assumed to be last task in the method)
+        measure_method: BaseMethod = next((m for m in sample.stages['methods'].active if m.id == measure_method_id), None)
+        if measure_method is None:
+            print(f'Warning: no active tasks found with sample {sample.id} and method {measure_method_id}')
+            return
+        
+        task = measure_method.tasks[-1]
+        subtask_id = task.task['tasks'][-1].get('id', None)
+
+        print(f'\tSubtask id: {subtask_id}')
+        # wait until measurement is complete and then read the result
+        thread_result = dict(result={},
+                             task_id=task.id,
+                             subtask_id=subtask_id)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(self.monitor_task,task.id, thread_result)
+            concurrent.futures.thread._threads_queues.clear()
+        
+            future.result()
+
+        if thread_result['result'].get('success', None) is not None:
+            return self.get_task_result(task.id, subtask_id)
+        else:
+            pprint(thread_result)
 
     def solvent_from_material(self, name: str, fraction: float) -> Solvent:
         """Gets solvent properties from material definition
