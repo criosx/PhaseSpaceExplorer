@@ -1,8 +1,9 @@
-import concurrent.futures
 import datetime
+import json
 import numpy as np
 import time
 
+from pathlib import Path
 from pprint import pprint
 from uuid import uuid4
 
@@ -10,11 +11,9 @@ from .manager import MANAGER_ADDRESS, ManagerInterface
 from ..gp import Gp
 
 from lh_manager.liquid_handler.bedlayout import Composition
-from lh_manager.liquid_handler.methods import BaseMethod
 from lh_manager.liquid_handler.roadmapmethods import (ROADMAP_QCMD_MakeBilayer,
                                                       ROADMAP_QCMD_RinseLoopInjectandMeasure,
                                                       ROADMAP_QCMD_RinseDirectInjectandMeasure,
-                                                      ROADMAP_QCMD_DirectInjectandMeasure,
                                                       ROADMAP_DirectInjecttoQCMD,
                                                       QCMDRecordTag,
                                                       Formulation,
@@ -24,35 +23,6 @@ from lh_manager.liquid_handler.roadmapmethods import (ROADMAP_QCMD_MakeBilayer,
                                                       ROADMAP_DirectInjecttoQCMD)
                                                       
 from lh_manager.liquid_handler.samplelist import Sample, MethodList
-
-def extract_ids(sample: Sample, method_id: str):
-    
-    method: BaseMethod = next((m for m in sample.stages['methods'].active if m.id == method_id), None)
-    if method is None:
-        print(f'Warning: no active tasks found with sample {sample.id} and method {method_id}')
-        return None, None
-    
-    task = method.tasks[-1]
-    subtask = task.task['tasks'][-1]
-
-    return task.id, subtask.get('id', None)
-
-def execute_measurement(manager: ManagerInterface, sample: Sample, measure_method_id: str) -> dict:
-
-    task_id, subtask_id = extract_ids(sample, measure_method_id)
-    print(f'\tSubtask id: {subtask_id}')
-    # wait until measurement is complete and then read the result
-    thread_result = {'result': None}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(manager.monitor_task,task_id, thread_result)
-        concurrent.futures.thread._threads_queues.clear()
-    
-        future.result()
-
-    if thread_result['result'].get('success', None) is not None:
-        return manager.get_task_result(task_id, subtask_id)
-    else:
-        pprint(thread_result)
 
 def collect_data(manager: ManagerInterface, lipids: dict[str, float], concentration: float, sample_name: str, description: str, control: bool = True) -> tuple[float, float]:
     """Performs a bilayer formation measurement with a lipid composition and total lipid concentration.
@@ -137,7 +107,7 @@ def collect_data(manager: ManagerInterface, lipids: dict[str, float], concentrat
                                             Use_Rinse_System_for_Solvent=True,
                                             Lipid_Injection_Volume=1.0,
                                             Buffer_Composition=buffer_composition,
-                                            Buffer_Injection_Volume=2.0,
+                                            Buffer_Injection_Volume=1.2,
                                             Use_Rinse_System_for_Buffer=True,
                                             Extra_Volume=0.1,
                                             Rinse_Volume=2.0,
@@ -180,14 +150,17 @@ def collect_data(manager: ManagerInterface, lipids: dict[str, float], concentrat
 
     if control:
         print('Waiting for control measurement result...')
-        control_result = execute_measurement(manager, sample, buffer_control.id)
+        control_result = manager.wait_for_result(sample, buffer_control.id)
     else:
         control_result = None
 
     print('Waiting for measurement result...')
 
     # make the bilayer
-    measure_result = execute_measurement(manager, sample, make_bilayer.id)
+    measure_result = manager.wait_for_result(sample, make_bilayer.id)
+
+    # archive the sample to clean up the GUI
+    manager.archive_sample(sample)
 
     # parse and combine the results
     return {'control': control_result, 'measure': measure_result}
@@ -213,6 +186,7 @@ def reduce_qcmd(meas: dict, control: dict, harmonic_power: float = 1) -> float:
         ctag = control['result']['result']['tags'][0]
     except (KeyError, ValueError):
         print(f'Warning: measurement result does not have correct format: {meas}')
+        return np.nan, np.nan
     harmonics = [1, 3, 5, 7, 9]
 
     diffs = []
@@ -327,7 +301,7 @@ def collect_wateripa(manager: ManagerInterface, ipa_fraction: float, sample_name
 
     if control:
         print('Waiting for control measurement result...')
-        control_result = execute_measurement(manager, sample, water_control.id)
+        control_result = manager.wait_for_result(sample, water_control.id)
     else:
         control_result = None
 
@@ -340,7 +314,10 @@ def collect_wateripa(manager: ManagerInterface, ipa_fraction: float, sample_name
     #sample.stages['methods'].add(water_ipa_measure)
     #_, sample = manager.update_sample(sample)
     #_, sample = manager.run_sample(sample.id)
-    measure_result = execute_measurement(manager, sample, water_ipa_measure.id)
+    measure_result = manager.wait_for_result(sample, water_ipa_measure.id)
+
+    # archive sample
+    manager.archive_sample(sample)
 
     # parse and combine the results
     return {'control': control_result, 'measure': measure_result}
@@ -375,11 +352,28 @@ class ROADMAP_Gp(Gp):
         self.control_counter: int = 0
         
         # how often to collect control measurements
-        self.control_cycle = 3
+        self.control_cycle = 4
 
         # connect to manager
         self.manager = ManagerInterface(address=MANAGER_ADDRESS)
         self.manager.initialize()
+
+    def save_result(self, it_label: str, optpars: dict, raw_result: dict, reduced_result: dict):
+
+        storage_path = Path(self.spath) / 'results' / 'results.json'
+        if storage_path.exists():
+
+            with open(storage_path, 'r') as f:
+                current_results = json.load(f)
+        else:
+            current_results = {}
+
+        current_results.update({'control': self.control,
+                                str(it_label): dict(optpars=optpars,
+                                                   raw_result=raw_result,
+                                                   reduced_result=reduced_result)})
+        with open(storage_path, 'w') as f:
+            json.dump(current_results, f)
 
     def do_measurement(self, optpars: dict, it_label: str):
 
@@ -409,8 +403,8 @@ class ROADMAP_Gp(Gp):
         sample_name = f'{self.project_name} point {it_label}'
         description = datetime.datetime.now().strftime("%Y%m%d %H.%M.%S")
         if 'ipa_fraction' in optpars:
-           res = collect_wateripa(self.manager, optpars['ipa_fraction'], sample_name, description, control=new_control)
-           harmonic_power = 0.5
+            res = collect_wateripa(self.manager, optpars['ipa_fraction'], sample_name, description, control=new_control)
+            harmonic_power = 0.5
         else:
             res = collect_data(self.manager, lipid_dict, conc, sample_name, description, control=new_control)
             harmonic_power = 1.0
@@ -423,6 +417,12 @@ class ROADMAP_Gp(Gp):
         # reduce data with most recent control
         results, variance = reduce_qcmd(res['measure'], self.control, harmonic_power)
 
+        #res = {'measure': None, 'control': None}
+        #results, variance = 0.0, 0.0
+
+        self.save_result(it_label, optpars, raw_result=res, reduced_result=dict(results=results,
+                                                                                variance=variance))
+
         return results, variance
 
 if __name__ == '__main__':
@@ -434,8 +434,8 @@ if __name__ == '__main__':
     manager.initialize()
 
     if True:
-        #res = collect_data(manager, {'DOPC': 0.1, 'DOPE': 0.2}, 0.5, 'hello', 'goodbye')
-        res = collect_wateripa(manager, 0.2, 'hello', 'goodbye', False)
+        res = collect_data(manager, {'DOPC': 0.1}, 0.5, 'hello', 'goodbye', True)
+        #res = collect_wateripa(manager, 0.2, 'hello', 'goodbye', False)
         #with open('control.json', 'w') as f:
         #    json.dump(res, f, indent=2)
         pprint(res)
