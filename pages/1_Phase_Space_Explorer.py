@@ -204,7 +204,6 @@ def parameter_input():
             key=st.session_state['widget_key'],
             num_rows='dynamic',
             disabled=["_index"],
-            num_rows='dynamic',
             column_order=["name", "type", "value", "optimize", "lower_opt", "upper_opt",
                           "step_opt"],
             column_config={
