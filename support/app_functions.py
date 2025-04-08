@@ -1,5 +1,9 @@
+from threading import Event
+
 from . import gp
 from .roadmap.roadmap import ROADMAP_Gp
+
+terminate_pse: Event = Event()
 
 def run_pse(pse_pars, pse_dir, acq_func="variance", optimizer='gpcam', gpcam_iterations=50, parallel_measurements=1, project_name=''):
     """
@@ -14,8 +18,11 @@ def run_pse(pse_pars, pse_dir, acq_func="variance", optimizer='gpcam', gpcam_ite
     :param project_name: (str) project name
     :return: (Bool) success flag.
     """
+
+    terminate_pse.clear()
+
     gpo = ROADMAP_Gp(exp_par=pse_pars, storage_path=pse_dir, acq_func=acq_func, optimizer=optimizer,
-                gpcam_iterations=gpcam_iterations, parallel_measurements=parallel_measurements, resume=True, project_name=project_name)
+                gpcam_iterations=gpcam_iterations, parallel_measurements=parallel_measurements, resume=True, project_name=project_name, stop_event=terminate_pse)
     # success flag currently unused
     success = gpo.run()
 

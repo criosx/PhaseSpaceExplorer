@@ -320,4 +320,12 @@ if col_opt_5.button('Start or Resume Optimization', disabled=(st.session_state['
         thread.start()
         st.rerun()
 
+if col_opt_6.button('Stop Optimization', disabled=(st.session_state['jobs_status'] != 'running'),
+                    use_container_width=True):
+    
+    app_functions.terminate_pse.set()
+    st.session_state['jobs_status'] = 'idle'
+    st.rerun()
+
+
 
