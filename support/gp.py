@@ -4,6 +4,7 @@ from os import path, mkdir
 import concurrent.futures
 from functools import partial
 import json
+from threading import Event
 import math
 import matplotlib.pyplot as plt
 import numpy as np
@@ -130,7 +131,7 @@ def save_plot_2d(x, y, z, xlabel, ylabel, color, filename='plot', zmin=None, zma
 class Gp:
     def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50,
                  gpcam_init_dataset_size=20, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam',
-                 parallel_measurements=1, resume=False, show_support_points=True, project_name=''):
+                 parallel_measurements=1, resume=False, show_support_points=True, project_name='', stop_event: Event = Event()):
         """
         Initialize the GP class.
         :param exp_par: (Pandas dataframe) Exploration parameter dataframe with rows: "name", "type", "value",
@@ -153,6 +154,7 @@ class Gp:
         self.parallel_measurements = parallel_measurements
         self.show_support_points = show_support_points
         self.project_name = project_name
+        self.stop_event = stop_event
 
         self.my_ae = None
 
@@ -401,7 +403,7 @@ class Gp:
         it = np.nditer(self.results, flags=['multi_index'])
         work_on_it_list = []
         work_on_itindex_list = []
-        while not it.finished and not self.measurement_failure:
+        while not it.finished and not self.measurement_failure and not self.stop_event.is_set():
             itindex = it.multi_index
             # run iteration if it is first time or the value in results is nan
             print('index : {}'.format(itindex))
@@ -513,7 +515,7 @@ class Gp:
             self.gpcam_prediction()
             self.gpcam_plot()
 
-        while len(self.my_ae.x_data) < self.gpcam_iterations and not self.measurement_failure:
+        while len(self.my_ae.x_data) < self.gpcam_iterations and not self.measurement_failure and not self.stop_event.is_set():
             self.gpcam_train()
 
             # training and client can be killed if desired and in case they are optimized asynchronously

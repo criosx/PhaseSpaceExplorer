@@ -6,6 +6,7 @@ import requests
 import time
 
 from pprint import pprint
+from threading import Event
 from urllib.parse import urljoin
 
 from lh_manager.material_db.db import Material
@@ -83,7 +84,7 @@ class ManagerInterface:
 
         response = requests.get(urljoin(self.address, '/autocontrol/GetTaskStatus'), json={'task_id': task_id})
         try:
-            resp = response.json()
+            resp: dict = response.json()
         except json.JSONDecodeError:
             return {'error': 'json could not be decoded'}
         
@@ -93,11 +94,11 @@ class ManagerInterface:
         if resp.get('queue', '') == 'history':
             return {'success': 'complete'}
         
-        return 'incomplete'
+        return {}
 
-    def monitor_task(self, task_id: str, thread_result: dict, poll_interval: float = 5) -> str:
-        current_status = 'incomplete'
-        while current_status == 'incomplete':
+    def monitor_task(self, task_id: str, thread_result: dict, poll_interval: float = 5, stop_event: Event = Event()) -> str:
+        current_status = {}
+        while (current_status.get('success', 'incomplete') == 'incomplete') & (not stop_event.is_set()):
             time.sleep(poll_interval)
             current_status = self.get_task_complete(task_id=task_id)
         
@@ -112,7 +113,7 @@ class ManagerInterface:
 
         return response
 
-    def wait_for_result(self, sample: Sample, measure_method_id: str) -> dict:
+    def wait_for_result(self, sample: Sample, measure_method_id: str, stop_event: Event = Event()) -> dict:
 
         # extract task_id and subtask_id for measurement task (assumed to be last task in the method)
         measure_method: BaseMethod = next((m for m in sample.stages['methods'].active if m.id == measure_method_id), None)
@@ -129,7 +130,7 @@ class ManagerInterface:
                              task_id=task.id,
                              subtask_id=subtask_id)
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(self.monitor_task,task.id, thread_result)
+            future = executor.submit(self.monitor_task,task.id, thread_result, stop_event=stop_event)
             concurrent.futures.thread._threads_queues.clear()
         
             future.result()

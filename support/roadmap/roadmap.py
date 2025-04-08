@@ -5,6 +5,7 @@ import time
 
 from pathlib import Path
 from pprint import pprint
+from threading import Event
 from uuid import uuid4
 
 from .manager import MANAGER_ADDRESS, ManagerInterface
@@ -24,7 +25,13 @@ from lh_manager.liquid_handler.roadmapmethods import (ROADMAP_QCMD_MakeBilayer,
                                                       
 from lh_manager.liquid_handler.samplelist import Sample, MethodList
 
-def collect_data(manager: ManagerInterface, lipids: dict[str, float], concentration: float, sample_name: str, description: str, control: bool = True) -> tuple[float, float]:
+def collect_data(manager: ManagerInterface,
+                 lipids: dict[str, float],
+                 concentration: float,
+                 sample_name: str,
+                 description: str,
+                 control: bool = True,
+                 stop_event: Event = Event()) -> tuple[float, float]:
     """Performs a bilayer formation measurement with a lipid composition and total lipid concentration.
     
         TODO: for now, assumes a single channel = 0, but in the future could implement a channel selector
@@ -150,14 +157,14 @@ def collect_data(manager: ManagerInterface, lipids: dict[str, float], concentrat
 
     if control:
         print('Waiting for control measurement result...')
-        control_result = manager.wait_for_result(sample, buffer_control.id)
+        control_result = manager.wait_for_result(sample, buffer_control.id, stop_event)
     else:
         control_result = None
 
     print('Waiting for measurement result...')
 
     # make the bilayer
-    measure_result = manager.wait_for_result(sample, make_bilayer.id)
+    measure_result = manager.wait_for_result(sample, make_bilayer.id, stop_event)
 
     # archive the sample to clean up the GUI
     manager.archive_sample(sample)
@@ -184,7 +191,7 @@ def reduce_qcmd(meas: dict, control: dict, harmonic_power: float = 1) -> float:
     try:
         mtag = meas['result']['result']['tags'][0]
         ctag = control['result']['result']['tags'][0]
-    except (KeyError, ValueError):
+    except (KeyError, ValueError, TypeError):
         print(f'Warning: measurement result does not have correct format: {meas}')
         return np.nan, np.nan
     harmonics = [1, 3, 5, 7, 9]
@@ -324,8 +331,8 @@ def collect_wateripa(manager: ManagerInterface, ipa_fraction: float, sample_name
 
 class ROADMAP_Gp(Gp):
 
-    def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50, gpcam_init_dataset_size=20, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam', parallel_measurements=1, resume=False, show_support_points=True, project_name=''):
-        super().__init__(exp_par, storage_path, acq_func, gpcam_iterations, gpcam_init_dataset_size, gpcam_step, keep_plots, miniter, optimizer, parallel_measurements, resume, show_support_points, project_name)
+    def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50, gpcam_init_dataset_size=20, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam', parallel_measurements=1, resume=False, show_support_points=True, project_name='', stop_event: Event = Event()):
+        super().__init__(exp_par, storage_path, acq_func, gpcam_iterations, gpcam_init_dataset_size, gpcam_step, keep_plots, miniter, optimizer, parallel_measurements, resume, show_support_points, project_name, stop_event)
 
         # sort compounds into optimized and non-optimized
         optimized_lipids = []
@@ -357,6 +364,8 @@ class ROADMAP_Gp(Gp):
         self.manager = ManagerInterface(address=MANAGER_ADDRESS)
         self.manager.initialize()
 
+        self.stop_event = stop_event
+
     def load_control(self) -> dict:
 
         control = None
@@ -386,6 +395,15 @@ class ROADMAP_Gp(Gp):
         with open(storage_path, 'w') as f:
             json.dump(current_results, f)
 
+    def do_measurement_test(self, optpars, it_label):
+        
+        total_time = 0
+        while (not self.stop_event.is_set()) & (total_time < 6):
+            time.sleep(2)
+            total_time += 2
+
+        return 0.1, 0.1
+
     def do_measurement(self, optpars: dict, it_label: str):
 
         # Configure a particular problem with a set of N lipids. Then there are N-1 keywords describing the composition, plus 1 for the total concentration.
@@ -414,10 +432,10 @@ class ROADMAP_Gp(Gp):
         sample_name = f'{self.project_name} point {it_label}'
         description = datetime.datetime.now().strftime("%Y%m%d %H.%M.%S")
         if 'ipa_fraction' in optpars:
-            res = collect_wateripa(self.manager, optpars['ipa_fraction'], sample_name, description, control=new_control)
+            res = collect_wateripa(self.manager, optpars['ipa_fraction'], sample_name, description, control=new_control, stop_event=self.stop_event)
             harmonic_power = 0.5
         else:
-            res = collect_data(self.manager, lipid_dict, conc, sample_name, description, control=new_control)
+            res = collect_data(self.manager, lipid_dict, conc, sample_name, description, control=new_control, stop_event=self.stop_event)
             harmonic_power = 1.0
 
         # replace current value of control if applicable
