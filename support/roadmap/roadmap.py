@@ -348,8 +348,7 @@ class ROADMAP_Gp(Gp):
             self.concentration = None
 
         # control measurement
-        self.control: dict | None = None
-        self.control_counter: int = 0
+        self.control: dict | None = self.load_control()
         
         # how often to collect control measurements
         self.control_cycle = 4
@@ -357,6 +356,18 @@ class ROADMAP_Gp(Gp):
         # connect to manager
         self.manager = ManagerInterface(address=MANAGER_ADDRESS)
         self.manager.initialize()
+
+    def load_control(self) -> dict:
+
+        control = None
+        storage_path = Path(self.spath) / 'results' / 'results.json'
+        if storage_path.exists():
+            with open(storage_path, 'r') as f:
+                current_results: dict = json.load(f)
+
+            control = current_results.get('control', None)
+
+        return control
 
     def save_result(self, it_label: str, optpars: dict, raw_result: dict, reduced_result: dict):
 
@@ -398,7 +409,7 @@ class ROADMAP_Gp(Gp):
         print(f'Starting measurement {it_label} with concentration {conc} and lipids {lipid_dict}: ')
 
         # collect data, including control if necessary, and increment control counter
-        new_control = (((self.control_counter % self.control_cycle) == 0) | (self.control is None))
+        new_control = (((int(it_label) % self.control_cycle) == 0) | (self.control is None))
         
         sample_name = f'{self.project_name} point {it_label}'
         description = datetime.datetime.now().strftime("%Y%m%d %H.%M.%S")
@@ -408,7 +419,6 @@ class ROADMAP_Gp(Gp):
         else:
             res = collect_data(self.manager, lipid_dict, conc, sample_name, description, control=new_control)
             harmonic_power = 1.0
-        self.control_counter += 1
 
         # replace current value of control if applicable
         if new_control:
