@@ -10,7 +10,7 @@ from threading import Event
 from urllib.parse import urljoin
 
 from lh_manager.material_db.db import Material
-from lh_manager.liquid_handler.bedlayout import Solvent, Solute
+from lh_manager.liquid_handler.bedlayout import LHBedLayout, Solvent, Solute
 from lh_manager.liquid_handler.methods import BaseMethod
 from lh_manager.liquid_handler.samplelist import Sample
 
@@ -40,6 +40,10 @@ class ManagerInterface:
 
         self.samples = {s['id']: s for s in samples['samples']}
         #SampleContainer.model_validate(samples)
+
+    def get_layout(self) -> LHBedLayout:
+
+        return LHBedLayout.model_validate(requests.get(urljoin(self.address, '/GUI/GetLayout/')).json())
 
     def get_sample_ids(self) -> list[str]:
 
