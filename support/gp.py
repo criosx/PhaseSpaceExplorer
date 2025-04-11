@@ -419,6 +419,10 @@ class Gp:
 
         return not self.measurement_failure
 
+    def cost_function(origin, x: np.ndarray, cost_func_parameters):
+
+        return np.ones_like(x)
+
     def run_optimization_gpcam(self):
         # Using the gpCAM global optimizer, follows the example from the gpCAM website
 
@@ -468,7 +472,7 @@ class Gp:
                                               init_dataset_size=self.gpcam_init_dataset_size,
                                               instrument_function=self.gpcam_instrument,
                                               acquisition_function=self.acq_func,  # optional_acq_func,
-                                              # cost_func = optional_cost_function,
+                                              cost_function=self.cost_function,
                                               # cost_update_func = optional_cost_update_function,
                                               x_data=x, y_data=y, noise_variances=v,
                                               # cost_func_params={"offset": 5.0, "slope": 10.0},

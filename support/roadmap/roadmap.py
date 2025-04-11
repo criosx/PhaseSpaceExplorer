@@ -1,6 +1,7 @@
 import datetime
 import json
 import numpy as np
+import pandas as pd
 import time
 
 from pathlib import Path
@@ -12,6 +13,7 @@ from .manager import MANAGER_ADDRESS, ManagerInterface
 from ..gp import Gp
 
 from lh_manager.liquid_handler.bedlayout import Composition
+from lh_manager.liquid_handler.formulation import SoluteFormulation
 from lh_manager.liquid_handler.roadmapmethods import (ROADMAP_QCMD_MakeBilayer,
                                                       ROADMAP_QCMD_RinseLoopInjectandMeasure,
                                                       ROADMAP_QCMD_RinseDirectInjectandMeasure,
@@ -26,8 +28,7 @@ from lh_manager.liquid_handler.roadmapmethods import (ROADMAP_QCMD_MakeBilayer,
 from lh_manager.liquid_handler.samplelist import Sample, MethodList
 
 def collect_data(manager: ManagerInterface,
-                 lipids: dict[str, float],
-                 concentration: float,
+                 bilayer_composition: Composition,
                  sample_name: str,
                  description: str,
                  control: bool = True,
@@ -48,12 +49,8 @@ def collect_data(manager: ManagerInterface,
         tuple[float, float]: normalized change in QCMD frequency and error
     """
 
-    sum_fractions = sum(lipids.values())
-    units = 'mg/mL'
     water = Composition(solvents=[manager.solvent_from_material('H2O', fraction=1)], solutes=[])
     isopropanol = Composition(solvents=[manager.solvent_from_material('isopropanol', fraction=1)], solutes=[])
-    bilayer_composition = Composition(solvents=[manager.solvent_from_material('isopropanol', fraction=1)],
-                                      solutes=[manager.solute_from_material(name, frac * concentration / sum_fractions, units) for (name, frac) in lipids.items() if frac > 0])
 
     buffer_composition = Composition(solvents=[manager.solvent_from_material('H2O', fraction=1)],
                                     solutes=[manager.solute_from_material('NaCl', concentration=0.15, units='M'),
@@ -363,8 +360,59 @@ class ROADMAP_Gp(Gp):
         # connect to manager
         self.manager = ManagerInterface(address=MANAGER_ADDRESS)
         self.manager.initialize()
+        self._layout = self.manager.get_layout()
+        self._diluent = Composition(solvents=[self.manager.solvent_from_material('isopropanol', 1)], solutes=[])
 
         self.stop_event = stop_event
+
+    def composition_from_parameters(self, args: list) -> Composition:
+
+        labels = list(self.all_par[self.all_par['optimize']]['name'])
+        print(labels)
+        # break out all non-lipid parameters
+        if 'lipid concentration' in labels:
+            cidx = labels.index('lipid concentration')
+            conc = args.pop(cidx)
+            labels.pop(cidx)
+
+        # cycle through optimized lipids and determine absolute fraction. Each lipid is expressed as a fraction of the remainder
+        lipid_dict = {}
+        sum_remainder = 0.0
+        for lipid in self.optimized_lipids:
+            frac = args[labels.index(lipid)]
+            new_fraction = frac * (1 - sum_remainder)
+            lipid_dict[lipid] = float(new_fraction)
+            sum_remainder += new_fraction
+
+        # fill in the remainder with the non-optimized lipids in the ratio given in the table values
+        sum_non_optimized = sum(v for v in self.non_optimized_lipids.values())
+        for lipid, v in self.non_optimized_lipids.items():
+            lipid_dict[lipid] = float(v * (1 - sum_remainder) / sum_non_optimized)
+
+        sum_fractions = sum(lipid_dict.values())
+        units = 'mg/mL'
+        bilayer_composition = Composition(solvents=[self.manager.solvent_from_material('isopropanol', fraction=1)],
+                                      solutes=[self.manager.solute_from_material(name, frac * conc / sum_fractions, units) for (name, frac) in lipid_dict.items() if frac > 0])
+        
+        return bilayer_composition, lipid_dict, conc
+
+    def cost_function(self, origin: np.ndarray, x: np.ndarray, cost_function_parameters):
+        # origin has shape V x D
+        # x has shape V x D
+        # cost_function_parameters can be anything
+
+        print('Calculating cost', x.shape)
+
+        formulation_template = SoluteFormulation(target_composition=Composition(), target_volume=1.5, diluent=self._diluent)
+
+        res = np.ones(x.shape[0])
+        for i, ix in enumerate(x):
+            formulation_template.target_composition = self.composition_from_parameters(list(ix))[0]
+            _, _, success = formulation_template.formulate(self._layout)
+            res[i] = formulation_template.estimated_time(self._layout) if success else 1e8
+            #print(formulation_template.get_methods(self._layout), [m.estimated_time(self._layout) for m in formulation_template.get_methods(self._layout)], res[i])
+
+        return res
 
     def load_control(self) -> dict:
 
@@ -408,23 +456,14 @@ class ROADMAP_Gp(Gp):
 
         # Configure a particular problem with a set of N lipids. Then there are N-1 keywords describing the composition, plus 1 for the total concentration.
 
-        # break out all non-lipid parameters
-        conc = optpars.get('lipid concentration', self.concentration)
+        bilayer_composition, lipid_dict, conc = self.composition_from_parameters(list(optpars.values()))
 
-        # cycle through optimized lipids and determine absolute fraction. Each lipid is expressed as a fraction of the remainder
-        lipid_dict = {}
-        sum_remainder = 0.0
-        for lipid in self.optimized_lipids:
-            new_fraction = optpars[lipid] * (1 - sum_remainder)
-            lipid_dict[lipid] = float(new_fraction)
-            sum_remainder += new_fraction
+        cost = self.cost_function(None, np.array([list(optpars.values())]), None)[0]
 
-        # fill in the remainder with the non-optimized lipids in the ratio given in the table values
-        sum_non_optimized = sum(v for v in self.non_optimized_lipids.values())
-        for lipid, v in self.non_optimized_lipids.items():
-            lipid_dict[lipid] = float(v * (1 - sum_remainder) / sum_non_optimized)
+        print(f'Starting measurement {it_label} with concentration {conc} and lipids {lipid_dict}, cost {cost}: ')
 
-        print(f'Starting measurement {it_label} with concentration {conc} and lipids {lipid_dict}: ')
+        time.sleep(0.1)
+        return (cost, cost ** 0.5) if cost < 1e8 else (0.0, 0.1)
 
         # collect data, including control if necessary, and increment control counter
         new_control = (((int(it_label) % self.control_cycle) == 0) | (self.control is None))
@@ -435,7 +474,7 @@ class ROADMAP_Gp(Gp):
             res = collect_wateripa(self.manager, optpars['ipa_fraction'], sample_name, description, control=new_control, stop_event=self.stop_event)
             harmonic_power = 0.5
         else:
-            res = collect_data(self.manager, lipid_dict, conc, sample_name, description, control=new_control, stop_event=self.stop_event)
+            res = collect_data(self.manager, bilayer_composition, sample_name, description, control=new_control, stop_event=self.stop_event)
             harmonic_power = 1.0
 
         # replace current value of control if applicable
@@ -447,6 +486,9 @@ class ROADMAP_Gp(Gp):
 
         #res = {'measure': None, 'control': None}
         #results, variance = 0.0, 0.0
+
+        # update layout
+        self._layout = self.manager.get_layout()
 
         self.save_result(it_label, optpars, raw_result=res, reduced_result=dict(results=results,
                                                                                 variance=variance))
