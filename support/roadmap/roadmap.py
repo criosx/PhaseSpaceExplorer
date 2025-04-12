@@ -5,6 +5,7 @@ import time
 
 from pathlib import Path
 from pprint import pprint
+from scipy.special import erf
 from threading import Event
 from uuid import uuid4
 
@@ -12,6 +13,7 @@ from .manager import MANAGER_ADDRESS, ManagerInterface
 from ..gp import Gp
 
 from lh_manager.liquid_handler.bedlayout import Composition
+from lh_manager.liquid_handler.formulation import SoluteFormulation
 from lh_manager.liquid_handler.roadmapmethods import (ROADMAP_QCMD_MakeBilayer,
                                                       ROADMAP_QCMD_RinseLoopInjectandMeasure,
                                                       ROADMAP_QCMD_RinseDirectInjectandMeasure,
@@ -26,8 +28,7 @@ from lh_manager.liquid_handler.roadmapmethods import (ROADMAP_QCMD_MakeBilayer,
 from lh_manager.liquid_handler.samplelist import Sample, MethodList
 
 def collect_data(manager: ManagerInterface,
-                 lipids: dict[str, float],
-                 concentration: float,
+                 bilayer_composition: Composition,
                  sample_name: str,
                  description: str,
                  control: bool = True,
@@ -38,7 +39,7 @@ def collect_data(manager: ManagerInterface,
                 based on the inputs (substrate) or a rolling counter
 
     Args:
-        lipids (dict[str, float]): dictionary with lipid name as the key and fraction of that lipid as the value
+        lipids (dict[str, float]): dictionary with lipid name as the key and concentration of that lipid as the value
         concentration (float): total lipid concentration in mg/mL
         sample_name (str): name of sample
         description (str): description of data set
@@ -48,12 +49,8 @@ def collect_data(manager: ManagerInterface,
         tuple[float, float]: normalized change in QCMD frequency and error
     """
 
-    sum_fractions = sum(lipids.values())
-    units = 'mg/mL'
     water = Composition(solvents=[manager.solvent_from_material('H2O', fraction=1)], solutes=[])
     isopropanol = Composition(solvents=[manager.solvent_from_material('isopropanol', fraction=1)], solutes=[])
-    bilayer_composition = Composition(solvents=[manager.solvent_from_material('isopropanol', fraction=1)],
-                                      solutes=[manager.solute_from_material(name, frac * concentration / sum_fractions, units) for (name, frac) in lipids.items() if frac > 0])
 
     buffer_composition = Composition(solvents=[manager.solvent_from_material('H2O', fraction=1)],
                                     solutes=[manager.solute_from_material('NaCl', concentration=0.15, units='M'),
@@ -123,14 +120,6 @@ def collect_data(manager: ManagerInterface,
                                             Equilibration_Time=5.0,
                                             Measurement_Time=3.0)
     
-    # Initiate sample
-    sample = Sample(name=sample_name,
-        description=repr(bilayer_composition) + ', started ' + description,
-        channel=0,
-        stages={'methods': MethodList()})
-
-    sample = manager.new_sample(sample=sample)    
-
     # set up running protocol. Note that measurement methods must have an ID
     methods = [
         ethanol_rinse,
@@ -145,6 +134,14 @@ def collect_data(manager: ManagerInterface,
         second_water_rinse,
         make_bilayer
     ]
+
+    # Initiate sample
+    sample = Sample(name=sample_name,
+        description=repr(bilayer_composition) + ', started ' + description,
+        channel=0,
+        stages={'methods': MethodList()})
+
+    sample = manager.new_sample(sample=sample)        
 
     for method in methods:
         sample.stages['methods'].add(method)
@@ -167,7 +164,7 @@ def collect_data(manager: ManagerInterface,
     measure_result = manager.wait_for_result(sample, make_bilayer.id, stop_event)
 
     # archive the sample to clean up the GUI
-    manager.archive_sample(sample)
+    #manager.archive_sample(sample)
 
     # parse and combine the results
     return {'control': control_result, 'measure': measure_result}
@@ -193,7 +190,7 @@ def reduce_qcmd(meas: dict, control: dict, harmonic_power: float = 1) -> float:
         ctag = control['result']['result']['tags'][0]
     except (KeyError, ValueError, TypeError):
         print(f'Warning: measurement result does not have correct format: {meas}')
-        return np.nan, np.nan
+        return None, None
     harmonics = [1, 3, 5, 7, 9]
 
     diffs = []
@@ -331,31 +328,25 @@ def collect_wateripa(manager: ManagerInterface, ipa_fraction: float, sample_name
 
 class ROADMAP_Gp(Gp):
 
-    def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50, gpcam_init_dataset_size=20, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam', parallel_measurements=1, resume=False, show_support_points=True, project_name='', stop_event: Event = Event()):
+    def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50, gpcam_init_dataset_size=1, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam', parallel_measurements=1, resume=False, show_support_points=True, project_name='', stop_event: Event = Event()):
         super().__init__(exp_par, storage_path, acq_func, gpcam_iterations, gpcam_init_dataset_size, gpcam_step, keep_plots, miniter, optimizer, parallel_measurements, resume, show_support_points, project_name, stop_event)
 
-        # sort compounds into optimized and non-optimized
-        optimized_lipids = []
-        non_optimized_lipids = {}
-        for _, par in self.all_par.iterrows():
-            if par['type'] == 'compound':
-                if par['optimize']:
-                    optimized_lipids.append(par['name'])
-                else:
-                    non_optimized_lipids[par['name']] = par['value']
+        """
+            Parameters are fractions of the *volume* of the stock solutions of the optimized lipids. In other words, a parameter set of {'DOPC': 0.1, 'DOPE': 0.2}
+                would create a formulation with a standard total volume V, of which 0.1V is of the DOPC stock solution, 0.2V is of the DOPE stock solution, and 0.7V is
+                the diluent. This allows the parameters to vary from 0 to 1 with no issues.
 
-        self.optimized_lipids = optimized_lipids
-        self.non_optimized_lipids = non_optimized_lipids
-
-        # get default value of concentration
-        if 'lipid concentration' in self.all_par.columns:
-            concentration_index = self.all_par[self.all_par['name'] == 'lipid concentration'].index.values[0]
-            self.concentration = self.all_par.iloc[concentration_index]['value']
-        else:
-            self.concentration = None
+            Plotting this in a reasonable concentration/composition space has to be done later. The stock solution concentrations are looked up in the layout.
+            TODO: stock solutions need to be stored.
+        """
 
         # control measurement
-        self.control: dict | None = self.load_control()
+        self.controls: dict | None = self.load_controls()
+        if len(self.controls):
+            # take most recent control (should always be one)
+            self.current_control: str = list(self.controls.keys())[-1]
+        else:
+            self.current_control = None
         
         # how often to collect control measurements
         self.control_cycle = 4
@@ -364,21 +355,40 @@ class ROADMAP_Gp(Gp):
         self.manager = ManagerInterface(address=MANAGER_ADDRESS)
         self.manager.initialize()
 
+        # create a dictionary of lipid names and stock solution concentrations
+        optimized_lipids = list(self.all_par[self.all_par['type']=='compound']['name'])
+        #pprint(optimized_lipids)
+        self._layout = self.manager.get_layout()
+        self.units = 'mg/mL'
+        self.lipids = {name: self._find_stock(name) for name in optimized_lipids}
+        #pprint(self.lipids)
+
         self.stop_event = stop_event
 
-    def load_control(self) -> dict:
+    def _update_layout(self):
 
-        control = None
+        self._layout = self.manager.get_layout()
+
+    def _find_stock(self, compound: str) -> float:
+
+        # find wells that have only the compound as a stock solution
+        well = next((w for w in self._layout.racks['Stock'].wells if [s.name for s in w.composition.solutes]==[compound]), None)
+
+        return well.composition.solutes[0].convert_units(self.units)
+
+    def load_controls(self) -> dict:
+
+        controls = {}
         storage_path = Path(self.spath) / 'results' / 'results.json'
         if storage_path.exists():
             with open(storage_path, 'r') as f:
                 current_results: dict = json.load(f)
 
-            control = current_results.get('control', None)
+            controls = current_results.get('controls', {})
 
-        return control
+        return controls
 
-    def save_result(self, it_label: str, optpars: dict, raw_result: dict, reduced_result: dict):
+    def save_result(self, it_label: str, parameters: dict, raw_result: dict, reduced_result: dict):
 
         storage_path = Path(self.spath) / 'results' / 'results.json'
         if storage_path.exists():
@@ -388,8 +398,9 @@ class ROADMAP_Gp(Gp):
         else:
             current_results = {}
 
-        current_results.update({'control': self.control,
-                                str(it_label): dict(optpars=optpars,
+        current_results.update({'controls': self.controls,
+                                str(it_label): dict(parameters=parameters,
+                                                    control=self.current_control,
                                                    raw_result=raw_result,
                                                    reduced_result=reduced_result)})
         with open(storage_path, 'w') as f:
@@ -407,48 +418,75 @@ class ROADMAP_Gp(Gp):
     def do_measurement(self, optpars: dict, it_label: str):
 
         # Configure a particular problem with a set of N lipids. Then there are N-1 keywords describing the composition, plus 1 for the total concentration.
-
-        # break out all non-lipid parameters
-        conc = optpars.get('lipid concentration', self.concentration)
-
-        # cycle through optimized lipids and determine absolute fraction. Each lipid is expressed as a fraction of the remainder
+        # Calculate the composition we expect from optpars.
         lipid_dict = {}
-        sum_remainder = 0.0
-        for lipid in self.optimized_lipids:
-            new_fraction = optpars[lipid] * (1 - sum_remainder)
-            lipid_dict[lipid] = float(new_fraction)
-            sum_remainder += new_fraction
+        frac_remaining = 1.0
+        for compound, stock_conc in self.lipids.items():
+            frac = optpars.get(compound, 0.0) * frac_remaining
+            frac_remaining *= (frac_remaining - frac)
+            lipid_dict[compound] = frac * stock_conc
 
-        # fill in the remainder with the non-optimized lipids in the ratio given in the table values
-        sum_non_optimized = sum(v for v in self.non_optimized_lipids.values())
-        for lipid, v in self.non_optimized_lipids.items():
-            lipid_dict[lipid] = float(v * (1 - sum_remainder) / sum_non_optimized)
+        total_concentration = sum(f for f in lipid_dict.values())
 
-        print(f'Starting measurement {it_label} with concentration {conc} and lipids {lipid_dict}: ')
+        print(f'Starting measurement {it_label} with total concentration {total_concentration} and lipid concentrations {lipid_dict}: ')
 
+        if False:
+            result = -25 * (0.5 * (1 + erf((total_concentration - 0.6) / np.sqrt(2 * 0.3 ** 2))) + 0.5 * (1 + erf((lipid_dict['DOPE'] - 1.5) / np.sqrt(2 * 0.3 ** 2))))
+            variance = np.sqrt(np.abs(result))
+            time.sleep(5)
+            return result, variance
+
+        # check that the composition can be made with the current bed layout
+        self._update_layout()
+        diluent = Composition(solvents=[self.manager.solvent_from_material('isopropanol', fraction=1)], solutes=[])
+        bilayer_composition = Composition(solvents=[],
+                                    solutes=[self.manager.solute_from_material(name, conc, self.units) for (name, conc) in lipid_dict.items() if conc > 0])
+        
+        # in special case that there are no lipids, specify that we're just measuring the diluent
+        if bilayer_composition.is_empty:
+            bilayer_composition = diluent
+        
+        # attempt the formulation. If it fails, stop. Most likely is that one of the stocks on the bed ran out.
+        bilayer_formulation = SoluteFormulation(target_composition=bilayer_composition, target_volume=1.0, diluent=diluent)
+        _, _, success = bilayer_formulation.formulate(self._layout)
+
+        if success:
+            real_composition = bilayer_formulation.get_expected_composition(self._layout)
+            print('Real composition: ' + repr(real_composition))
+        else:
+            raise RuntimeError('Cannot make composition ' + repr(bilayer_formulation))
+        
         # collect data, including control if necessary, and increment control counter
-        new_control = (((int(it_label) % self.control_cycle) == 0) | (self.control is None))
+        new_control = (((int(it_label) % self.control_cycle) == 0) | (len(self.controls)==0))
         
         sample_name = f'{self.project_name} point {it_label}'
         description = datetime.datetime.now().strftime("%Y%m%d %H.%M.%S")
-        if 'ipa_fraction' in optpars:
-            res = collect_wateripa(self.manager, optpars['ipa_fraction'], sample_name, description, control=new_control, stop_event=self.stop_event)
+        if 'ipa_fract   ion' in optpars:
+            res: dict = collect_wateripa(self.manager, optpars['ipa_fraction'], sample_name, description, control=new_control, stop_event=self.stop_event)
             harmonic_power = 0.5
         else:
-            res = collect_data(self.manager, lipid_dict, conc, sample_name, description, control=new_control, stop_event=self.stop_event)
+            res: dict = collect_data(self.manager, bilayer_composition, sample_name, description, control=new_control, stop_event=self.stop_event)
             harmonic_power = 1.0
 
         # replace current value of control if applicable
         if new_control:
-            self.control = res['control']
+            self.current_control = str(uuid4())
+            self.controls[self.current_control] = res['control']
+
+        parameters = {'optpars': optpars,
+                      'actual_composition': real_composition.model_dump(),
+                      'concentration': total_concentration,
+                      'lipid_concentrations': lipid_dict,
+                      'lipid_fractions': {k: (v / total_concentration if total_concentration > 0 else 0) for k, v in lipid_dict.items()},
+                      'harmonic_power': harmonic_power}
 
         # reduce data with most recent control
-        results, variance = reduce_qcmd(res['measure'], self.control, harmonic_power)
+        results, variance = reduce_qcmd(res['measure'], self.controls[self.current_control], harmonic_power)
 
         #res = {'measure': None, 'control': None}
         #results, variance = 0.0, 0.0
 
-        self.save_result(it_label, optpars, raw_result=res, reduced_result=dict(results=results,
+        self.save_result(it_label, parameters, raw_result=res, reduced_result=dict(results=results,
                                                                                 variance=variance))
 
         return results, variance
