@@ -220,14 +220,39 @@ class Gp:
         :param it_label: a label for the current iteration
         :return: (result, variance) measurement result
         """
+        # argument = 0
+        # for par in optpars:
+        #    argument += optpars[par] * 2 * np.pi
+
         argument = 0
+        valid = True
+        last_par = None
+
         for par in optpars:
-            argument += optpars[par] * 2 * np.pi
+            if last_par is None:
+                last_par = optpars[par]
+            else:
+                if optpars[par] > last_par:
+                    valid = False
+                last_par = optpars[par]
 
-        result = np.sin(argument)
-        variance = np.abs(result * 0.025) + 0.001
+            d = 1 - argument
+            if optpars[par] > 1:
+                p = 1
+            elif optpars[par] < 0:
+                p = 0
+            else:
+                p = optpars[par]
 
-        time.sleep(2)
+            argument += d * p
+        if valid:
+            result = np.sin(argument*6)
+            variance = np.abs(result * 0.025) + 0.0000001
+        else:
+            result = 0
+            variance = 0.0000001
+
+        time.sleep(0.1)
         return result, variance
 
     def gpcam_instrument(self, data):
