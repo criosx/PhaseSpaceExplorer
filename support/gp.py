@@ -3,6 +3,7 @@ from os import path, mkdir
 
 import concurrent.futures
 from functools import partial
+import json
 import math
 import matplotlib.pyplot as plt
 import numpy as np
@@ -220,10 +221,12 @@ class Gp:
         :param it_label: a label for the current iteration
         :return: (result, variance) measurement result
         """
-        # argument = 0
-        # for par in optpars:
-        #    argument += optpars[par] * 2 * np.pi
+        result = 0
+        for par in optpars:
+            result += optpars[par] * 2 * np.pi
+        variance = np.abs(result * 0.025) + 1e-7
 
+        '''
         argument = 0
         valid = True
         last_par = None
@@ -251,6 +254,7 @@ class Gp:
         else:
             result = 0
             variance = 0.0000001
+        '''
 
         time.sleep(0.1)
         return result, variance
@@ -562,6 +566,14 @@ class Gp:
                     break
 
     def results_io(self, load=False):
+        def pack(nparray):
+            return_data = {
+                "array": nparray.tolist(),
+                "dtype": str(nparray.dtype),
+                "shape": nparray.shape
+            }
+            return return_data
+
         if self.optimizer == 'grid':
             if load:
                 with open(path.join(self.spath, 'results', 'pse_grid_results.pkl'), 'rb') as file:
@@ -577,6 +589,13 @@ class Gp:
                     pickle.dump(self.variances, file)
                 with open(path.join(self.spath, 'results', 'pse_grid_iterations.pkl'), 'wb') as file:
                     pickle.dump(self.n_iter, file)
+                # create a json output
+                results_data = pack(self.results)
+                variances_data = pack(self.variances)
+                iterations_data = pack(self.n_iter)
+                json_out = {'results': results_data, 'variances': variances_data, 'iterations': iterations_data}
+                with open(path.join(self.spath, 'results', 'pse_grid_results.json'), 'w') as file:
+                    json.dump(json_out, file)
         elif self.optimizer == 'gpcam':
             if load:
                 with open(path.join(self.spath, 'results', 'gpCAMstream.pkl'), 'rb') as file:
@@ -584,6 +603,9 @@ class Gp:
             else:
                 with open(path.join(self.spath, 'results', 'gpCAMstream.pkl'), 'wb') as file:
                     pickle.dump(self.gpCAMstream, file)
+                # create a json output
+                path_name = path.join(self.spath, 'results', 'gpCAMstream.json')
+                self.gpCAMstream.to_json(path_name, orient="records", indent=2)
         else:
             raise NotImplementedError('Unknown optimization method')
 

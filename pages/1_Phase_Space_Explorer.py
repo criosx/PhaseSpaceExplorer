@@ -1,4 +1,5 @@
 import copy
+import json
 import numpy as np
 import os
 import pandas
@@ -188,6 +189,10 @@ def save_session_state(folder):
     file_path = os.path.join(folder, 'pse_parameters.pkl')
     with open(file_path, 'wb') as f:
         pickle.dump(st.session_state['opt_pars'], f)
+    # also save a json record
+    path_name = os.path.join(folder, 'pse_parameters.json')
+    with open(path_name, 'w') as file:
+        json.dump(st.session_state['opt_pars'], file)
 
 
 @st.fragment
