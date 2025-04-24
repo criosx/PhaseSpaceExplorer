@@ -3,6 +3,7 @@ from os import path, mkdir
 
 import concurrent.futures
 from functools import partial
+import json
 import math
 import matplotlib.pyplot as plt
 import numpy as np
@@ -220,15 +221,99 @@ class Gp:
         :param it_label: a label for the current iteration
         :return: (result, variance) measurement result
         """
-        argument = 0
+        result = 0
         for par in optpars:
-            argument += optpars[par] * 2 * np.pi
+            result += optpars[par] * 2 * np.pi
+        variance = np.abs(result * 0.025) + 1e-7
 
-        result = np.sin(argument)
-        variance = np.abs(result * 0.025) + 0.001
+        '''
+        argument = 0
+        valid = True
+        last_par = None
 
-        time.sleep(2)
+        for par in optpars:
+            if last_par is None:
+                last_par = optpars[par]
+            else:
+                if optpars[par] > last_par:
+                    valid = False
+                last_par = optpars[par]
+
+            d = 1 - argument
+            if optpars[par] > 1:
+                p = 1
+            elif optpars[par] < 0:
+                p = 0
+            else:
+                p = optpars[par]
+
+            argument += d * p
+        if valid:
+            result = np.sin(argument*6)
+            variance = np.abs(result * 0.025) + 0.0000001
+        else:
+            result = 0
+            variance = 0.0000001
+        '''
+
+        time.sleep(0.1)
         return result, variance
+
+    def gpcam_init_ae(self):
+        # initialization
+        # feel free to try different acquisition functions, e.g. optional_acq_func, "covariance", "shannon_ig"
+        # note how costs are defined in for the autonomous experimenter
+        parlimits = self.exp_par[['lower_opt', 'upper_opt']].to_numpy()
+        numpars = len(parlimits)
+
+        # those are Pandas dataframe colunns
+        x = self.gpCAMstream['position'].to_numpy()
+        if x.size != 0 and x.dtype == object:
+            x = np.stack(x)
+        y = self.gpCAMstream['value'].to_numpy()
+        v = self.gpCAMstream['variance'].to_numpy()
+
+        if len(x) >= 1:
+            # use any previously computed results
+            x = np.array(x)
+            y = np.array(y)
+            v = np.array(v)
+            self.gpiteration = len(x)
+            bFirstEval = False
+        else:
+            x = None
+            y = None
+            v = None
+            self.gpiteration = 0
+            bFirstEval = True
+
+        hyperpars = np.ones([numpars + 1])
+        # the zeroth hyper bound is associated with a signal variance
+        # the others with the length scales of the parameter inputs
+        hyper_bounds = np.array([[0.001, 100]] * (numpars + 1))
+        for i in range(len(parlimits)):
+            delta = parlimits[i][1] - parlimits[i][0]
+            hyper_bounds[i + 1] = [delta * 1e-3, delta * 1e1]
+
+        self.my_ae = AutonomousExperimenterGP(parlimits, hyperpars, hyper_bounds,
+                                              init_dataset_size=self.gpcam_init_dataset_size,
+                                              instrument_function=self.gpcam_instrument,
+                                              acquisition_function=self.acq_func,  # optional_acq_func,
+                                              # cost_func = optional_cost_function,
+                                              # cost_update_func = optional_cost_update_function,
+                                              x_data=x, y_data=y, noise_variances=v,
+                                              # cost_func_params={"offset": 5.0, "slope": 10.0},
+                                              kernel_function=None, calc_inv=True,
+                                              communicate_full_dataset=False, ram_economy=True)
+
+        return bFirstEval
+
+    def gpcam_train(self):
+        print("length of the dataset: ", len(self.my_ae.x_data))
+        self.my_ae.train(method="global", max_iter=10000)  # or not, or both, choose "global","local" and "hgdl"
+        # update hyperparameters in case they are optimized asynchronously
+        self.my_ae.train(method="local")  # or not, or both, choose between "global","local" and "hgdl"
+
 
     def gpcam_instrument(self, data):
         """
@@ -270,7 +355,24 @@ class Gp:
         self.worked_on_iterations_delete()
         return data
 
-    def gpcam_prediction(self, my_ae):
+    def gpcam_plot(self):
+        path1 = path.join(self.spath, 'plots')
+        if not path.isdir(path1):
+            mkdir(path1)
+        # self.plot_arr(self.prediction_gpcam, filename=path.join(path1, 'prediction_gpcam'), mark_maximum=True)
+
+        if self.show_support_points:
+            support_points = self.gpCAMstream['position'].to_numpy()
+            if support_points.dtype == object:
+                support_points = np.stack(support_points)
+        else:
+            support_points = None
+
+        self.plot_arr(self.prediction_gpcam,
+                      filename=path.join(path1, 'prediction_gpcam'), mark_maximum=True,
+                      support_points=support_points)
+
+    def gpcam_prediction(self):
         # create a flattened array of all positions to be evaluated, maximize the use of numpy
         prediction_positions = np.array(self.axes[0])
         for i in range(1, len(self.axes)):
@@ -288,25 +390,9 @@ class Gp:
             newshape = tuple(newshape)
             prediction_positions = np.reshape(prediction_positions, newshape)
 
-        res = my_ae.gp_optimizer.posterior_mean(prediction_positions)
+        res = self.my_ae.gp_optimizer.posterior_mean(prediction_positions)
         f = res["f(x)"]
         self.prediction_gpcam = f.reshape(self.steplist)
-
-        path1 = path.join(self.spath, 'plots')
-        if not path.isdir(path1):
-            mkdir(path1)
-        # self.plot_arr(self.prediction_gpcam, filename=path.join(path1, 'prediction_gpcam'), mark_maximum=True)
-
-        if self.show_support_points:
-            support_points = self.gpCAMstream['position'].to_numpy()
-            if support_points.dtype == object:
-                support_points = np.stack(support_points)
-        else:
-            support_points = None
-
-        self.plot_arr(self.prediction_gpcam,
-                      filename=path.join(path1, 'prediction_gpcam'), mark_maximum=True,
-                      support_points=support_points)
 
     def gridsearch_iterate_over_all_indices(self, refinement=False):
         bWorkedOnIndex = False
@@ -418,70 +504,17 @@ class Gp:
 
     def run_optimization_gpcam(self):
         # Using the gpCAM global optimizer, follows the example from the gpCAM website
-
-        # initialization
-        # feel free to try different acquisition functions, e.g. optional_acq_func, "covariance", "shannon_ig"
-        # note how costs are defined in for the autonomous experimenter
-        parlimits = self.exp_par[['lower_opt', 'upper_opt']].to_numpy()
-        numpars = len(parlimits)
-
-        # those are Pandas dataframe colunns
-        x = self.gpCAMstream['position'].to_numpy()
-        if x.size != 0 and x.dtype == object:
-            x = np.stack(x)
-        y = self.gpCAMstream['value'].to_numpy()
-        v = self.gpCAMstream['variance'].to_numpy()
-
-        if len(x) >= 1:
-            # use any previously computed results
-            x = np.array(x)
-            y = np.array(y)
-            v = np.array(v)
-            self.gpiteration = len(x)
-            bFirstEval = False
-        else:
-            x = None
-            y = None
-            v = None
-            self.gpiteration = 0
-            bFirstEval = True
-
-        hyperpars = np.ones([numpars + 1])
-        # the zeroth hyper bound is associated with a signal variance
-        # the others with the length scales of the parameter inputs
-        hyper_bounds = np.array([[0.001, 100]] * (numpars + 1))
-        for i in range(len(parlimits)):
-            delta = parlimits[i][1] - parlimits[i][0]
-            hyper_bounds[i + 1] = [delta * 1e-3, delta * 1e1]
-
-        print('-----------------')
-        print(x)
-        print('-----------------')
-        print(y)
-        print('-----------------')
-        print(v)
-
-        self.my_ae = AutonomousExperimenterGP(parlimits, hyperpars, hyper_bounds,
-                                              init_dataset_size=self.gpcam_init_dataset_size,
-                                              instrument_function=self.gpcam_instrument,
-                                              acquisition_function=self.acq_func,  # optional_acq_func,
-                                              # cost_func = optional_cost_function,
-                                              # cost_update_func = optional_cost_update_function,
-                                              x_data=x, y_data=y, noise_variances=v,
-                                              # cost_func_params={"offset": 5.0, "slope": 10.0},
-                                              kernel_function=None, calc_inv=True,
-                                              communicate_full_dataset=False, ram_economy=True)
+        bFirstEval = self.gpcam_init_ae()
 
         # save and evaluate initial data set if it has been freshly calculate
         if bFirstEval:
             self.results_io()
-            self.gpcam_prediction(self.my_ae)
+            self.gpcam_prediction()
+            self.gpcam_plot()
 
         while len(self.my_ae.x_data) < self.gpcam_iterations and not self.measurement_failure:
-            print("length of the dataset: ", len(self.my_ae.x_data))
-            self.my_ae.train(method="global", max_iter=10000)  # or not, or both, choose "global","local" and "hgdl"
-            # update hyperparameters in case they are optimized asynchronously
-            self.my_ae.train(method="local")  # or not, or both, choose between "global","local" and "hgdl"
+            self.gpcam_train()
+
             # training and client can be killed if desired and in case they are optimized asynchronously
             # self.my_ae.kill_training()
             if self.gpcam_step is not None:
@@ -492,8 +525,9 @@ class Gp:
                 # not used because parallel execution of retrain interferes with streamlit
                 retrain_async_at = np.logspace(start=np.log10(len(self.my_ae.x_data)),
                                                stop=np.log10(self.gpcam_iterations / 2), num=3, dtype=int)
-            retrain_global_at = np.linspace(start=1, stop=len(self.my_ae.x_data), num=int(target_iterations/2))
-            retrain_local_at = np.linspace(start=2, stop=len(self.my_ae.x_data), num=int(target_iterations/2))
+            # TODO: Check if the local and global training works with multichannel data acquisition
+            retrain_global_at = np.linspace(start=1, stop=len(self.my_ae.x_data), num=int(target_iterations / 2))
+            retrain_local_at = np.linspace(start=2, stop=len(self.my_ae.x_data), num=int(target_iterations / 2))
             # run the autonomous loop
             self.my_ae.go(N=target_iterations,
                           retrain_async_at=[],  # retrain_async_at,
@@ -514,7 +548,8 @@ class Gp:
             if self.gpcam_step is None:
                 self.my_ae.kill_training()
             self.results_io()
-            self.gpcam_prediction(self.my_ae)
+            self.gpcam_prediction()
+            self.gpcam_plot()
 
     def run_optimization_grid(self):
         # Grid search
@@ -531,6 +566,14 @@ class Gp:
                     break
 
     def results_io(self, load=False):
+        def pack(nparray):
+            return_data = {
+                "array": nparray.tolist(),
+                "dtype": str(nparray.dtype),
+                "shape": nparray.shape
+            }
+            return return_data
+
         if self.optimizer == 'grid':
             if load:
                 with open(path.join(self.spath, 'results', 'pse_grid_results.pkl'), 'rb') as file:
@@ -546,6 +589,13 @@ class Gp:
                     pickle.dump(self.variances, file)
                 with open(path.join(self.spath, 'results', 'pse_grid_iterations.pkl'), 'wb') as file:
                     pickle.dump(self.n_iter, file)
+                # create a json output
+                results_data = pack(self.results)
+                variances_data = pack(self.variances)
+                iterations_data = pack(self.n_iter)
+                json_out = {'results': results_data, 'variances': variances_data, 'iterations': iterations_data}
+                with open(path.join(self.spath, 'results', 'pse_grid_results.json'), 'w') as file:
+                    json.dump(json_out, file)
         elif self.optimizer == 'gpcam':
             if load:
                 with open(path.join(self.spath, 'results', 'gpCAMstream.pkl'), 'rb') as file:
@@ -553,6 +603,9 @@ class Gp:
             else:
                 with open(path.join(self.spath, 'results', 'gpCAMstream.pkl'), 'wb') as file:
                     pickle.dump(self.gpCAMstream, file)
+                # create a json output
+                path_name = path.join(self.spath, 'results', 'gpCAMstream.json')
+                self.gpCAMstream.to_json(path_name, orient="records", indent=2)
         else:
             raise NotImplementedError('Unknown optimization method')
 
