@@ -27,10 +27,47 @@ from lh_manager.liquid_handler.roadmapmethods import (ROADMAP_QCMD_MakeBilayer,
                                                       
 from lh_manager.liquid_handler.samplelist import Sample, MethodList
 
+def collect_data_sleep(manager: ManagerInterface,
+                 bilayer_composition: Composition,
+                 sample_name: str,
+                 description: str,
+                 channel: int = 0,
+                 control: bool = True,
+                 stop_event: Event = Event()) -> tuple[float, float]:
+    """Performs a bilayer formation measurement with a lipid composition and total lipid concentration.
+    
+        TODO: for now, assumes a single channel = 0, but in the future could implement a channel selector
+                based on the inputs (substrate) or a rolling counter
+
+    Args:
+        lipids (dict[str, float]): dictionary with lipid name as the key and concentration of that lipid as the value
+        concentration (float): total lipid concentration in mg/mL
+        sample_name (str): name of sample
+        description (str): description of data set
+        control (bool, optional): if True, collect a control measurement. Default True.
+
+    Returns:
+        tuple[float, float]: normalized change in QCMD frequency and error
+    """
+
+    # Initiate sample
+    sample = Sample(name=sample_name,
+        description=repr(bilayer_composition) + ', started ' + description,
+        channel=channel,
+        stages={'methods': MethodList()})
+
+    sample = manager.new_sample(sample=sample)        
+
+    time.sleep(30)
+
+    # parse and combine the results
+    return {'control': {}, 'measure': {}}
+
 def collect_data(manager: ManagerInterface,
                  bilayer_composition: Composition,
                  sample_name: str,
                  description: str,
+                 channel: int = 0,
                  control: bool = True,
                  stop_event: Event = Event()) -> tuple[float, float]:
     """Performs a bilayer formation measurement with a lipid composition and total lipid concentration.
@@ -138,7 +175,7 @@ def collect_data(manager: ManagerInterface,
     # Initiate sample
     sample = Sample(name=sample_name,
         description=repr(bilayer_composition) + ', started ' + description,
-        channel=0,
+        channel=channel,
         stages={'methods': MethodList()})
 
     sample = manager.new_sample(sample=sample)        
@@ -328,7 +365,7 @@ def collect_wateripa(manager: ManagerInterface, ipa_fraction: float, sample_name
 
 class ROADMAP_Gp(Gp):
 
-    def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50, gpcam_init_dataset_size=1, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam', parallel_measurements=1, resume=False, show_support_points=True, project_name='', stop_event: Event = Event()):
+    def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50, gpcam_init_dataset_size=2, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam', parallel_measurements=1, resume=False, show_support_points=True, project_name='', stop_event: Event = Event()):
         super().__init__(exp_par, storage_path, acq_func, gpcam_iterations, gpcam_init_dataset_size, gpcam_step, keep_plots, miniter, optimizer, parallel_measurements, resume, show_support_points, project_name, stop_event)
 
         """
@@ -340,13 +377,18 @@ class ROADMAP_Gp(Gp):
             TODO: stock solutions need to be stored.
         """
 
+        # set number of channels
+        self.n_channels = 2
+
         # control measurement
-        self.controls: dict | None = self.load_controls()
-        if len(self.controls):
-            # take most recent control (should always be one)
-            self.current_control: str = list(self.controls.keys())[-1]
-        else:
-            self.current_control = None
+        self.controls: dict[str, dict] = self.load_controls()
+        self.current_control: list[str] = [None for _ in range(self.n_channels)]
+        for channel in range(self.n_channels):
+            if len(self.controls[str(channel)]):
+                # take most recent control (should always be one)
+                self.current_control[channel] = list(self.controls[str(channel)].keys())[-1]
+            else:
+                self.current_control[channel] = None
         
         # how often to collect control measurements
         self.control_cycle = 4
@@ -378,17 +420,17 @@ class ROADMAP_Gp(Gp):
 
     def load_controls(self) -> dict:
 
-        controls = {}
+        controls = {str(i): {} for i in range(self.n_channels)}
         storage_path = Path(self.spath) / 'results' / 'results.json'
         if storage_path.exists():
             with open(storage_path, 'r') as f:
                 current_results: dict = json.load(f)
 
-            controls = current_results.get('controls', {})
+            controls = current_results.get('controls', controls)
 
         return controls
 
-    def save_result(self, it_label: str, parameters: dict, raw_result: dict, reduced_result: dict):
+    def save_result(self, it_label: str, parameters: dict, raw_result: dict, control_id: str, reduced_result: dict):
 
         storage_path = Path(self.spath) / 'results' / 'results.json'
         if storage_path.exists():
@@ -400,7 +442,7 @@ class ROADMAP_Gp(Gp):
 
         current_results.update({'controls': self.controls,
                                 str(it_label): dict(parameters=parameters,
-                                                    control=self.current_control,
+                                                    control=control_id,
                                                    raw_result=raw_result,
                                                    reduced_result=reduced_result)})
         with open(storage_path, 'w') as f:
@@ -417,14 +459,17 @@ class ROADMAP_Gp(Gp):
 
     def do_measurement(self, optpars: dict, it_label: str):
 
+        # determine channel number
+        channel = int(it_label) % self.n_channels
+
         # Configure a particular problem with a set of N lipids. Then there are N-1 keywords describing the composition, plus 1 for the total concentration.
         # Calculate the composition we expect from optpars.
         lipid_dict = {}
         frac_remaining = 1.0
         for compound, stock_conc in self.lipids.items():
-            frac = optpars.get(compound, 0.0) * frac_remaining
-            frac_remaining *= (frac_remaining - frac)
-            lipid_dict[compound] = frac * stock_conc
+            frac = optpars.get(compound, 0.0)
+            lipid_dict[compound] = frac * frac_remaining * stock_conc
+            frac_remaining *= (1.0 - frac)
 
         total_concentration = sum(f for f in lipid_dict.values())
 
@@ -457,21 +502,24 @@ class ROADMAP_Gp(Gp):
             raise RuntimeError('Cannot make composition ' + repr(bilayer_formulation))
         
         # collect data, including control if necessary, and increment control counter
-        new_control = (((int(it_label) % self.control_cycle) == 0) | (len(self.controls)==0))
+        channel_counter = (int(it_label) - channel) // self.n_channels
+        new_control = (((channel_counter % self.control_cycle) == 0) | (len(self.controls[str(channel)])==0))
+        print(f'Iteration {it_label} in channel {channel} with channel-specific counter {channel_counter}')
         
         sample_name = f'{self.project_name} point {it_label}'
         description = datetime.datetime.now().strftime("%Y%m%d %H.%M.%S")
-        if 'ipa_fract   ion' in optpars:
+        if 'ipa_fraction' in optpars:
             res: dict = collect_wateripa(self.manager, optpars['ipa_fraction'], sample_name, description, control=new_control, stop_event=self.stop_event)
             harmonic_power = 0.5
         else:
-            res: dict = collect_data(self.manager, bilayer_composition, sample_name, description, control=new_control, stop_event=self.stop_event)
+            res: dict = collect_data(self.manager, bilayer_composition, sample_name, description, channel=channel, control=new_control, stop_event=self.stop_event)
             harmonic_power = 1.0
 
         # replace current value of control if applicable
         if new_control:
-            self.current_control = str(uuid4())
-            self.controls[self.current_control] = res['control']
+            new_id = str(uuid4())
+            self.current_control[channel] = new_id
+            self.controls[str(channel)][new_id] = res['control']
 
         parameters = {'optpars': optpars,
                       'actual_composition': real_composition.model_dump(),
@@ -481,12 +529,15 @@ class ROADMAP_Gp(Gp):
                       'harmonic_power': harmonic_power}
 
         # reduce data with most recent control
-        results, variance = reduce_qcmd(res['measure'], self.controls[self.current_control], harmonic_power)
+        if len(res['measure']):
+            results, variance = reduce_qcmd(res['measure'], self.controls[str(channel)][self.current_control[channel]], harmonic_power)
+        else:
+            results, variance = 0.0, 0.01
 
         #res = {'measure': None, 'control': None}
-        #results, variance = 0.0, 0.0
+        #results, variance = 0.0, 0.01
 
-        self.save_result(it_label, parameters, raw_result=res, reduced_result=dict(results=results,
+        self.save_result(it_label, parameters, raw_result=res, control_id=self.current_control[channel], reduced_result=dict(results=results,
                                                                                 variance=variance))
 
         return results, variance
