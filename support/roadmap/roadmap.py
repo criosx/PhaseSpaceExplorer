@@ -450,12 +450,19 @@ class ROADMAP_Gp(Gp):
 
     def do_measurement_test(self, optpars, it_label):
         
+        print(optpars)
         total_time = 0
         while (not self.stop_event.is_set()) & (total_time < 6):
             time.sleep(2)
             total_time += 2
 
         return 0.1, 0.1
+
+    def gpcam_instrument(self, data):
+        if self.gpiteration == 0:
+            data[0]['x_data'] = np.zeros(len(self.lipids))
+
+        return super().gpcam_instrument(data)
 
     def do_measurement(self, optpars: dict, it_label: str):
 
