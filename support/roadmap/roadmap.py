@@ -1,3 +1,4 @@
+import copy
 import datetime
 import json
 import numpy as np
@@ -11,6 +12,7 @@ from uuid import uuid4
 
 from .manager import MANAGER_ADDRESS, ManagerInterface
 from ..gp import Gp
+from gpcam import GPOptimizer
 
 from lh_manager.liquid_handler.bedlayout import Composition
 from lh_manager.liquid_handler.formulation import SoluteFormulation
@@ -26,6 +28,22 @@ from lh_manager.liquid_handler.roadmapmethods import (ROADMAP_QCMD_MakeBilayer,
                                                       ROADMAP_DirectInjecttoQCMD)
                                                       
 from lh_manager.liquid_handler.samplelist import Sample, MethodList
+
+def acq_variance_target(x: np.ndarray, gpoptimizer: GPOptimizer):
+
+    #print(x, x.shape)
+    #print(gpoptimizer.posterior_covariance(x, variance_only=True)['v(x)'], gpoptimizer.posterior_mean(x)['f(x)'])
+    retval = np.array(gpoptimizer.posterior_covariance(x, variance_only=True)['v(x)']) / (np.array(gpoptimizer.posterior_mean(x)['f(x)']) + 25) ** 2
+    #print(retval)
+    return retval
+
+def acq_variance_target_add(x: np.ndarray, gpoptimizer: GPOptimizer):
+
+    #print(x, x.shape)
+    #print(gpoptimizer.posterior_covariance(x, variance_only=True)['v(x)'], gpoptimizer.posterior_mean(x)['f(x)'])
+    retval = 3 * np.array(gpoptimizer.posterior_covariance(x, variance_only=True)['v(x)']) + 1.0 / (np.array(gpoptimizer.posterior_mean(x)['f(x)']) + 25) ** 2
+    #print(retval)
+    return retval
 
 def collect_data_sleep(manager: ManagerInterface,
                  bilayer_composition: Composition,
@@ -123,8 +141,8 @@ def collect_data(manager: ManagerInterface,
     
     buffer_control = ROADMAP_QCMD_RinseLoopInjectandMeasure(id=str(uuid4()),
                                                             Target_Composition=buffer_composition,
-                                                      Volume=1,
-                                                      Injection_Flow_Rate=2,
+                                                      Volume=1.5,
+                                                      Injection_Flow_Rate=0.1,
                                                       Extra_Volume=0.1,
                                                       Is_Organic=False,
                                                       Use_Bubble_Sensors=True,
@@ -148,7 +166,7 @@ def collect_data(manager: ManagerInterface,
                                             Use_Rinse_System_for_Solvent=True,
                                             Lipid_Injection_Volume=1.0,
                                             Buffer_Composition=buffer_composition,
-                                            Buffer_Injection_Volume=1.2,
+                                            Buffer_Injection_Volume=1.5,
                                             Use_Rinse_System_for_Buffer=True,
                                             Extra_Volume=0.1,
                                             Rinse_Volume=2.0,
@@ -159,16 +177,16 @@ def collect_data(manager: ManagerInterface,
     
     # set up running protocol. Note that measurement methods must have an ID
     methods = [
+        water_rinse,
         ethanol_rinse,
-        isopropanol_rinse
         ]
     if control:
         methods += [
-            water_rinse,
-            buffer_control
+            isopropanol_rinse,
+            buffer_control,
+            second_water_rinse,
         ]
     methods += [
-        second_water_rinse,
         make_bilayer
     ]
 
@@ -238,10 +256,16 @@ def reduce_qcmd(meas: dict, control: dict, harmonic_power: float = 1) -> float:
 
     diffs = np.array(diffs)[1:]
     diff_errs = np.array(diff_errs)[1:]
+    weights = 1. / diff_errs ** 2
     print(diffs, diff_errs)
 
-    average = np.average(diffs)
-    mix_variance = np.average(diff_errs ** 2 + diffs ** 2) - average ** 2
+    # weights are the individual variances
+    average = np.average(diffs, weights=weights)
+    mix_variance = np.average(diff_errs ** 2 + diffs ** 2, weights=weights) - average ** 2
+    
+    # apply Bessel correction https://en.wikipedia.org/wiki/Weighted_arithmetic_mean#Weighted_sample_variance
+    # does this apply to a mixture distribution?
+    #corrected_variance = mix_variance / (1 - sum(weights ** 2) / sum(weights) ** 2)
 
     return average, mix_variance
 
@@ -365,7 +389,7 @@ def collect_wateripa(manager: ManagerInterface, ipa_fraction: float, sample_name
 
 class ROADMAP_Gp(Gp):
 
-    def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50, gpcam_init_dataset_size=2, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam', parallel_measurements=1, resume=False, show_support_points=True, project_name='', stop_event: Event = Event()):
+    def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50, gpcam_init_dataset_size=1, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam', parallel_measurements=1, resume=False, show_support_points=True, project_name='', stop_event: Event = Event()):
         super().__init__(exp_par, storage_path, acq_func, gpcam_iterations, gpcam_init_dataset_size, gpcam_step, keep_plots, miniter, optimizer, parallel_measurements, resume, show_support_points, project_name, stop_event)
 
         """
@@ -377,8 +401,14 @@ class ROADMAP_Gp(Gp):
             TODO: stock solutions need to be stored.
         """
 
+        # set acquisition function
+        self.acq_func = acq_variance_target
+
         # set number of channels
-        self.n_channels = 2
+        self.n_channels = 1
+
+        # set target value for acquisition function
+        self.target_value = -25
 
         # control measurement
         self.controls: dict[str, dict] = self.load_controls()
@@ -450,13 +480,23 @@ class ROADMAP_Gp(Gp):
 
     def do_measurement_test(self, optpars, it_label):
         
-        print(optpars)
-        total_time = 0
-        while (not self.stop_event.is_set()) & (total_time < 6):
-            time.sleep(2)
-            total_time += 2
+        lipid_dict = {}
+        frac_remaining = 1.0
+        for compound, stock_conc in self.lipids.items():
+            frac = optpars.get(compound, 0.0)
+            lipid_dict[compound] = frac * frac_remaining * stock_conc
+            frac_remaining *= (1.0 - frac)
 
-        return 0.1, 0.1
+        total_concentration = sum(f for f in lipid_dict.values())
+
+        result = -25 * (0.5 * (1 + erf((total_concentration - 0.6) / np.sqrt(2 * 0.3 ** 2))) + \
+                        1.5 * (1 + erf((lipid_dict.get('DOPE', 0.0) - 1.0) / np.sqrt(2 * 0.3 ** 2))) + \
+                        1.0 * (1 + erf((lipid_dict.get('POPG', 0.0) - 1.5) / np.sqrt(2 * 0.3 ** 2))))
+        variance = np.sqrt(np.abs(result))
+
+        time.sleep(2)
+
+        return result, variance            
 
     def gpcam_instrument(self, data):
         if self.gpiteration == 0:
@@ -536,10 +576,10 @@ class ROADMAP_Gp(Gp):
                       'harmonic_power': harmonic_power}
 
         # reduce data with most recent control
-        if len(res['measure']):
-            results, variance = reduce_qcmd(res['measure'], self.controls[str(channel)][self.current_control[channel]], harmonic_power)
-        else:
-            results, variance = 0.0, 0.01
+        results, variance = None, None
+        if res['measure'] is not None:
+            if len(res['measure']):
+                results, variance = reduce_qcmd(res['measure'], self.controls[str(channel)][self.current_control[channel]], harmonic_power)
 
         #res = {'measure': None, 'control': None}
         #results, variance = 0.0, 0.01
