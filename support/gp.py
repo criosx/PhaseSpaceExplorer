@@ -1,5 +1,6 @@
 from gpcam.autonomous_experimenter import AutonomousExperimenterGP
 from os import path, mkdir
+from support import app_functions
 
 import concurrent.futures
 from functools import partial
@@ -152,6 +153,8 @@ class Gp:
             self.optimizer = 'gpcam'
         self.parallel_measurements = parallel_measurements
         self.show_support_points = show_support_points
+        # status dict of the type {"status": "running", "progress": "0%", "cancelled": False}
+        self.task_dict = {}
 
         self.my_ae = None
 
@@ -212,6 +215,8 @@ class Gp:
                 self.results_io(load=True)
 
         self.prediction_gpcam = np.zeros(self.steplist)
+
+
 
     def do_measurement(self, optpars, it_label):
         """
@@ -490,15 +495,21 @@ class Gp:
                                  filename=path.join(path1, filename+'_'+sp1+'_'+sp2), zmin=valmin, zmax=valmax,
                                  levels=levels, mark_maximum=mark_maximum, keep_plots=self.keep_plots)
 
-    def run(self):
+    def run(self, task_dict):
+        self.task_dict = task_dict
+
         if self.optimizer == 'grid':
             self.run_optimization_grid()
         elif self.optimizer == 'gpcam':
             self.run_optimization_gpcam()
         else:
+            self.task_dict['status'] = 'failure'
             raise NotImplementedError('Unknown optimization method')
 
-        print('------------------GP FINISHED---------------')
+        if self.measurement_failure:
+            self.task_dict['status'] = 'failure'
+        else:
+            self.task_dict['status'] = 'idle'
 
         return not self.measurement_failure
 

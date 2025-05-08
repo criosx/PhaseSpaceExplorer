@@ -19,4 +19,3 @@ def run_pse(pse_pars, pse_dir, acq_func="variance", optimizer='gpcam', gpcam_ite
     success = gpo.run()
 
     return success
-
