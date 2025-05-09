@@ -142,7 +142,7 @@ class Gp:
         self.gpcam_step = gpcam_step
         self.gpiteration = 0
         # global flag for an occuring measurement failure
-        self.measurement_failure = False
+        self.measurement_aborted = False
         self.keep_plots = keep_plots
         self.miniter = miniter
         self.optimizer = optimizer
@@ -356,7 +356,7 @@ class Gp:
                 self.gpCAMstream.loc[len(self.gpCAMstream)] = new_row
                 self.results_io()
             else:
-                self.measurement_failure = True
+                self.measurement_aborted = True
         self.worked_on_iterations_delete()
         return data
 
@@ -405,7 +405,7 @@ class Gp:
         it = np.nditer(self.results, flags=['multi_index'])
         work_on_it_list = []
         work_on_itindex_list = []
-        while not it.finished and not self.measurement_failure:
+        while not it.finished and not self.measurement_aborted:
             itindex = it.multi_index
             # run iteration if it is first time or the value in results is nan
             print('index : {}'.format(itindex))
@@ -430,7 +430,7 @@ class Gp:
                         self.variances[work_on_itindex_list[i]] = entry[1]
                         self.n_iter[work_on_itindex_list[i]] += 1
                     else:
-                        self.measurement_failure = True
+                        self.measurement_aborted = True
                 self.results_io()
                 path1 = path.join(self.spath, 'plots')
                 filename = path.join(path1, 'prediction_gpcam')
@@ -497,6 +497,7 @@ class Gp:
 
     def run(self, task_dict, print_queue=None):
         self.task_dict = task_dict
+        self.task_dict['status'] = 'running'
 
         if self.optimizer == 'grid':
             self.run_optimization_grid()
@@ -506,12 +507,13 @@ class Gp:
             self.task_dict['status'] = 'failure'
             raise NotImplementedError('Unknown optimization method')
 
-        if self.measurement_failure:
-            self.task_dict['status'] = 'failure'
-        else:
-            self.task_dict['status'] = 'idle'
+        if self.measurement_aborted:
+            if self.task_dict['status'] == 'failure':
+                return False
 
-        return not self.measurement_failure
+        # stopping or running status reset to idle
+        self.task_dict['status'] = 'idle'
+        return True
 
     def run_optimization_gpcam(self):
         # Using the gpCAM global optimizer, follows the example from the gpCAM website
@@ -523,7 +525,7 @@ class Gp:
             self.gpcam_prediction()
             self.gpcam_plot()
 
-        while len(self.my_ae.x_data) < self.gpcam_iterations and not self.measurement_failure:
+        while len(self.my_ae.x_data) < self.gpcam_iterations and not self.measurement_aborted:
             self.gpcam_train()
 
             # training and client can be killed if desired and in case they are optimized asynchronously
@@ -651,6 +653,10 @@ class Gp:
                           applying fields can be none, see also yield_optpars_label
         :return: (float, float) result and variance of the performed measurement
         """
+        if self.task_dict['cancelled']:
+            self.task_dict['status'] = 'stopping'
+            return None, None
+
         # only one argument is passed in the function to make it easier to work with
         # concurrent.futures.ThreadPoolExecutor()
         optpars, itlabel = self.yield_optpars_label(arguments)
@@ -659,6 +665,7 @@ class Gp:
             result, variance = self.do_measurement(optpars, itlabel)
         except RuntimeError as e:
             print('Measurement failed outside of GP {}'.format(e))
+            self.task_dict['status'] = 'failure'
             result = None
             variance = None
 

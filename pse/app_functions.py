@@ -62,8 +62,6 @@ def run_pse(pse_pars, pse_dir, acq_func="variance", optimizer='gpcam', gpcam_ite
     # flask_process = Process(target=gp_server.start_server, args=pse_dir)
     # flask_process.start()
 
-
-
     # check 10 times if new service port is available
     success = False
     for i in range(10):
@@ -95,11 +93,12 @@ def run_pse(pse_pars, pse_dir, acq_func="variance", optimizer='gpcam', gpcam_ite
                     time.sleep(0.5)  # try again soon
 
             communicate_post('/start_pse', port, kwdir)
-            print('Phase Space Exploration started.')
+            success = True
             break
 
         else:
             time.sleep(2)
 
-    return success
+    return success, port
+
 

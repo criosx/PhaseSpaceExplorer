@@ -31,6 +31,15 @@ def default():
     return "Server is running on port {}".format(port)
 
 
+@app.route("/get_status", methods=['GET'])
+def get_status():
+    global task_dict
+    if task_dict is not None:
+        return task_dict["status"]
+    else:
+        return "down"
+
+
 def start_server(storage_dir):
     global app
     global port
@@ -77,6 +86,14 @@ def start_pse():
     p.start()
 
     return "PSE started"
+
+
+@app.route('/stop_pse', methods=['GET'])
+def stop_pse():
+    global task_dict
+    if task_dict is not None:
+        task_dict["cancelled"] = True
+    return "Stopping of PSE tasks initialized"
 
 
 if __name__ == "__main__":
