@@ -11,7 +11,7 @@
   <component name="PyNamespacePackagesService">
     <option name="namespacePackageFolders">
       <list>
-        <option value="$MODULE_DIR$/support" />
+        <option value="$MODULE_DIR$/pse" />
       </list>
     </option>
   </component>

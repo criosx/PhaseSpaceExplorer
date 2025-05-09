@@ -12,7 +12,7 @@ streamlit_dir = os.path.join(app_dir, 'streamlit_QCMD_phasespace')
 if not os.path.isdir(streamlit_dir):
     os.mkdir(streamlit_dir)
 
-app_functions_dir = os.path.join(str(Path(__file__).parent), 'support')
+app_functions_dir = os.path.join(str(Path(__file__).parent), 'pse')
 
 # save paths to persistent session state
 st.session_state['streamlit_dir'] = streamlit_dir

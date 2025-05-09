@@ -6,11 +6,11 @@ import pandas
 import pickle
 import shutil
 import streamlit as st
-import threading
+import sys
 import uuid
 
-import sys
-from support import app_functions
+from pse import app_functions
+
 sys.path.append(st.session_state['app_functions_dir'])
 
 if 'jobs_status' not in st.session_state:
@@ -312,7 +312,7 @@ if col_opt_5.button('Start or Resume Optimization', disabled=(st.session_state['
     if st.session_state['jobs_status'] == 'idle':
         st.session_state['gp_iterations'] = gp_iter
         st.session_state['jobs_status'] = 'running'
-        kwargs = {'pse_pars': pandas.DataFrame(st.session_state['opt_pars']),
+        kwargs = {'pse_pars': st.session_state['opt_pars'],
                   'pse_dir': st.session_state['user_qcmd_opt_dir'],
                   'acq_func': opt_acq,
                   'optimizer': opt_optimizer,

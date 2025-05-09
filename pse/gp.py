@@ -1,9 +1,6 @@
 from gpcam.autonomous_experimenter import AutonomousExperimenterGP
 from os import path, mkdir
-from support import app_functions
-
 import concurrent.futures
-from functools import partial
 import json
 import math
 import matplotlib.pyplot as plt
@@ -134,8 +131,8 @@ class Gp:
                  parallel_measurements=1, resume=False, show_support_points=True):
         """
         Initialize the GP class.
-        :param exp_par: (Pandas dataframe) Exploration parameter dataframe with rows: "name", "type", "value",
-                        "lower_opt", "upper_opt", "step_opt"
+        :param exp_par: (Pandas dataframe or json or dict) Exploration parameter dataframe with rows: "name", "type",
+                        "value", "lower_opt", "upper_opt", "step_opt"
         :param optimizer: (string) Optimizer name 'gpcam', 'gpCAM' (redundant), or 'grid'
         :param resume: (bool, default False) loads previous results from the storage path.
         """
@@ -173,6 +170,9 @@ class Gp:
             mkdir(plot_path)
 
         # Pandas dataframe of exploration parameters
+
+        if not isinstance(exp_par, pd.DataFrame):
+            exp_par = pd.DataFrame(exp_par)
 
         self.all_par = exp_par
         self.exp_par = exp_par
@@ -495,7 +495,7 @@ class Gp:
                                  filename=path.join(path1, filename+'_'+sp1+'_'+sp2), zmin=valmin, zmax=valmax,
                                  levels=levels, mark_maximum=mark_maximum, keep_plots=self.keep_plots)
 
-    def run(self, task_dict):
+    def run(self, task_dict, print_queue=None):
         self.task_dict = task_dict
 
         if self.optimizer == 'grid':
