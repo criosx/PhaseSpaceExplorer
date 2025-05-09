@@ -653,6 +653,7 @@ class Gp:
                           applying fields can be none, see also yield_optpars_label
         :return: (float, float) result and variance of the performed measurement
         """
+        print(self.task_dict)
         if self.task_dict['cancelled']:
             self.task_dict['status'] = 'stopping'
             return None, None

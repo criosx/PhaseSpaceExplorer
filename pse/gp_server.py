@@ -1,14 +1,11 @@
 from contextlib import closing
 from flask import Flask
 from flask import abort, request
-from multiprocessing import Process, Manager, Queue
+from multiprocessing import Process, Manager
 import os
-import requests
 import socket
 import sys
-import threading
-import time
-from werkzeug.serving import run_simple
+
 
 from pse import gp
 
@@ -81,7 +78,9 @@ def start_pse():
         abort(400, description='No valid data received.')
 
     gpo = gp.Gp(**data)
-    task_dict = {"status": "running", "progress": "0%", "cancelled": False}
+    task_dict["status"] = "running"
+    task_dict["progress"] = "0%"
+    task_dict["cancelled"] = False
     p = Process(target=gpo.run, args=(task_dict, ))
     p.start()
 
@@ -93,6 +92,7 @@ def stop_pse():
     global task_dict
     if task_dict is not None:
         task_dict["cancelled"] = True
+
     return "Stopping of PSE tasks initialized"
 
 
