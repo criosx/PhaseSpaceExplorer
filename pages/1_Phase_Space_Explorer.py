@@ -319,9 +319,8 @@ if col_opt_5.button('Start or Resume Optimization', disabled=(st.session_state['
                   'gpcam_iterations': gp_iter,
                   'parallel_measurements': parallel_meas
                   }
-        thread = threading.Thread(target=app_functions.run_pse, kwargs=kwargs)
+        app_functions.run_pse(**kwargs)
         st.session_state['job_status'] = 'running'
-        thread.start()
-        st.rerun()
+
 
 

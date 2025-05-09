@@ -1,13 +1,9 @@
 import gp
 from flask import Flask
 from flask import abort, request
-import json
-import os
 from multiprocessing import Process, Manager
-from threading import Thread
-from typing import Optional
-import time
-import uuid
+import os
+import sys
 from werkzeug.serving import run_simple
 
 import socket
@@ -30,14 +26,18 @@ def find_free_port():
 
 @app.route("/")
 def default():
+    global port
     return "Server is running on port {}".format(port)
 
 
-def start_server():
+def start_server(storage_dir):
+    print(f"Using storage directory: {storage_dir} for gp.")
+
     global port
     port = find_free_port()
     # save port number to file for streamlit to read
-    with open("my_service_port.txt", "w") as f:
+    fp = os.path.join(storage_dir, "service_port.txt")
+    with open(fp, "w") as f:
         f.write(str(port))
     print(f"Starting Phase Space Explorer Flask server on port {port}")
 
@@ -73,4 +73,9 @@ def start_pse():
 
 
 if __name__ == "__main__":
-    start_server()
+    if len(sys.argv) < 2:
+        print("Usage: python gp_server.py <storage_directory>")
+        sys.exit(1)
+
+    storage_dir = sys.argv[1]
+    start_server(storage_dir)

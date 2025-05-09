@@ -8,3 +8,4 @@ plotly
 scikit-image
 flask
 werkzeug
+requests

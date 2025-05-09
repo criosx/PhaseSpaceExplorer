@@ -1,4 +1,26 @@
-from support import gp
+from multiprocessing import Process
+import os
+import requests
+import time
+from support import gp_server
+
+
+def communicate(endpoint, port, data):
+    """
+    Communicate with GP server.
+    :param endpoint: endpoint
+    :param port: port
+    :param data: data as a dictionary
+    :return: server response in json format
+    """
+    print('\n')
+    print('Submitting data to endpoint {}.'.format(endpoint))
+    url = 'http://localhost:' + str(port) + endpoint
+    headers = {'Content-Type': 'application/json'}
+    data = data.json()
+    response = requests.post(url, headers=headers, data=data)
+    print(response, response.text)
+    return response.json()
 
 
 def run_pse(pse_pars, pse_dir, acq_func="variance", optimizer='gpcam', gpcam_iterations=50, parallel_measurements=1):
@@ -13,9 +35,36 @@ def run_pse(pse_pars, pse_dir, acq_func="variance", optimizer='gpcam', gpcam_ite
     :param parallel_measurements: (int) number of parallel measurements per iteration
     :return: (Bool) success flag.
     """
-    gpo = gp.Gp(exp_par=pse_pars, storage_path=pse_dir, acq_func=acq_func, optimizer=optimizer,
-                gpcam_iterations=gpcam_iterations, parallel_measurements=parallel_measurements, resume=True)
-    # success flag currently unused
-    success = gpo.run()
+
+    # check if previous port file exists and delete it if it does
+    fp = os.path.join(pse_dir, 'service_port.txt')
+    if os.path.isfile(fp):
+        os.remove(fp)
+
+    flask_process = Process(target=gp_server.start_server, args=pse_dir)
+    flask_process.start()
+
+    # check 10 times if new service port is available
+    success = False
+    for i in range(10):
+        if os.path.isfile(fp):
+            with open(fp, "r") as f:
+                port = f.read().strip()
+                port = int(port)
+
+            kwdir = {
+                'exp_par': pse_pars,
+                'storage_path': pse_dir,
+                'acq_func': acq_func,
+                'optimizer': optimizer,
+                'gpcam_iterations': gpcam_iterations,
+                'parallel_measurements': parallel_measurements,
+                'resume': True
+            }
+            communicate('/start_pse', port, kwdir)
+
+        else:
+            time.sleep(2)
 
     return success
+
