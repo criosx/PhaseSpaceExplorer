@@ -345,20 +345,23 @@ class Gp:
         with concurrent.futures.ThreadPoolExecutor() as executor:
             results = list(executor.map(self.work_on_iteration, argument_list))
 
+        retdata = []
         for i, entry in enumerate(data):
-            # TODO: Not sure how GPCAM handles when no results are provided because the measurement failed.
-            if results[i][0] is not None:
-                entry["y_data"] = results[i][0]
-                entry['noise variance'] = results[i][1]
+            value, variance = results[i]
+            # Entries for None results will not be returned as they would raise a GPCam error
+            # abortion can be due to measurement failure or task cancellation
+            if value is not None:
+                entry["y_data"] = value
+                entry['noise variance'] = variance
                 # entry["cost"]  =
                 new_row = {'parameter names': self.exp_par['name'].to_list(), 'position': entry['x_data'],
-                           'value': results[i][0], 'variance': results[i][1]}
+                           'value': value, 'variance': variance}
                 self.gpCAMstream.loc[len(self.gpCAMstream)] = new_row
                 self.results_io()
-            else:
-                self.measurement_aborted = True
+                retdata.append(entry)
+
         self.worked_on_iterations_delete()
-        return data
+        return retdata
 
     def gpcam_plot(self):
         path1 = path.join(self.spath, 'plots')
@@ -398,6 +401,59 @@ class Gp:
         res = self.my_ae.gp_optimizer.posterior_mean(prediction_positions)
         f = res["f(x)"]
         self.prediction_gpcam = f.reshape(self.steplist)
+
+    def gpcam_run_optimization(self):
+        # Using the gpCAM global optimizer, follows the example from the gpCAM website
+        bFirstEval = self.gpcam_init_ae()
+
+        # save and evaluate initial data set if it has been freshly calculate
+        if bFirstEval:
+            self.results_io()
+            self.gpcam_prediction()
+            self.gpcam_plot()
+
+        while len(self.my_ae.x_data) < self.gpcam_iterations and not self.measurement_aborted:
+            print('gpCAM main loop with abortion signal {}'.format(self.measurement_aborted))
+            self.gpcam_train()
+            # training and client can be killed if desired and in case they are optimized asynchronously
+            # self.my_ae.kill_training()
+            if self.gpcam_step is not None:
+                target_iterations = len(self.my_ae.x_data) + self.gpcam_step
+                retrain_async_at = []
+            else:
+                target_iterations = self.gpcam_iterations
+                # not used because parallel execution of retrain interferes with streamlit
+                retrain_async_at = np.logspace(start=np.log10(len(self.my_ae.x_data)),
+                                               stop=np.log10(self.gpcam_iterations / 2), num=3, dtype=int)
+            # TODO: Check if the local and global training works with multichannel data acquisition
+            retrain_global_at = np.linspace(start=1, stop=len(self.my_ae.x_data), num=int(target_iterations / 2))
+            retrain_local_at = np.linspace(start=2, stop=len(self.my_ae.x_data), num=int(target_iterations / 2))
+            # run the autonomous loop
+            self.my_ae.go(N=target_iterations,
+                          retrain_async_at=[],  # retrain_async_at,
+                          retrain_globally_at=retrain_global_at,
+                          retrain_locally_at=retrain_local_at,
+                          acq_func_opt_setting=lambda obj: "global" if len(obj.data.dataset) % 2 == 0 else "local",
+                          break_condition_callable=self.gpcam_stop_condition,
+                          # training_opt_max_iter=200,
+                          # training_opt_pop_size=10,
+                          # training_opt_tol=1e-6,
+                          # acq_func_opt_max_iter=200,
+                          # acq_func_opt_pop_size=20,
+                          # acq_func_opt_tol=1e-6,
+                          number_of_suggested_measurements=self.parallel_measurements,
+                          # acq_func_opt_tol_adjust=0.1
+                          )
+
+            # training and client can be killed if desired and in case they are optimized asynchronously
+            if self.gpcam_step is None:
+                self.my_ae.kill_training()
+            self.results_io()
+            self.gpcam_prediction()
+            self.gpcam_plot()
+
+    def gpcam_stop_condition(self, ae_instance):
+        return self.task_dict.get("cancelled", False)
 
     def gridsearch_iterate_over_all_indices(self, refinement=False):
         bWorkedOnIndex = False
@@ -502,7 +558,7 @@ class Gp:
         if self.optimizer == 'grid':
             self.run_optimization_grid()
         elif self.optimizer == 'gpcam':
-            self.run_optimization_gpcam()
+            self.gpcam_run_optimization()
         else:
             self.task_dict['status'] = 'failure'
             raise NotImplementedError('Unknown optimization method')
@@ -514,55 +570,6 @@ class Gp:
         # stopping or running status reset to idle
         self.task_dict['status'] = 'idle'
         return True
-
-    def run_optimization_gpcam(self):
-        # Using the gpCAM global optimizer, follows the example from the gpCAM website
-        bFirstEval = self.gpcam_init_ae()
-
-        # save and evaluate initial data set if it has been freshly calculate
-        if bFirstEval:
-            self.results_io()
-            self.gpcam_prediction()
-            self.gpcam_plot()
-
-        while len(self.my_ae.x_data) < self.gpcam_iterations and not self.measurement_aborted:
-            self.gpcam_train()
-
-            # training and client can be killed if desired and in case they are optimized asynchronously
-            # self.my_ae.kill_training()
-            if self.gpcam_step is not None:
-                target_iterations = len(self.my_ae.x_data) + self.gpcam_step
-                retrain_async_at = []
-            else:
-                target_iterations = self.gpcam_iterations
-                # not used because parallel execution of retrain interferes with streamlit
-                retrain_async_at = np.logspace(start=np.log10(len(self.my_ae.x_data)),
-                                               stop=np.log10(self.gpcam_iterations / 2), num=3, dtype=int)
-            # TODO: Check if the local and global training works with multichannel data acquisition
-            retrain_global_at = np.linspace(start=1, stop=len(self.my_ae.x_data), num=int(target_iterations / 2))
-            retrain_local_at = np.linspace(start=2, stop=len(self.my_ae.x_data), num=int(target_iterations / 2))
-            # run the autonomous loop
-            self.my_ae.go(N=target_iterations,
-                          retrain_async_at=[],  # retrain_async_at,
-                          retrain_globally_at=retrain_global_at,
-                          retrain_locally_at=retrain_local_at,
-                          acq_func_opt_setting=lambda obj: "global" if len(obj.data.dataset) % 2 == 0 else "local",
-                          # training_opt_max_iter=200,
-                          # training_opt_pop_size=10,
-                          # training_opt_tol=1e-6,
-                          # acq_func_opt_max_iter=200,
-                          # acq_func_opt_pop_size=20,
-                          # acq_func_opt_tol=1e-6,
-                          number_of_suggested_measurements=self.parallel_measurements,
-                          # acq_func_opt_tol_adjust=0.1
-                          )
-
-            # training and client can be killed if desired and in case they are optimized asynchronously
-            if self.gpcam_step is None:
-                self.my_ae.kill_training()
-            self.results_io()
-            self.gpcam_prediction()
-            self.gpcam_plot()
 
     def run_optimization_grid(self):
         # Grid search
@@ -656,6 +663,7 @@ class Gp:
         print(self.task_dict)
         if self.task_dict['cancelled']:
             self.task_dict['status'] = 'stopping'
+            self.measurement_aborted = True
             return None, None
 
         # only one argument is passed in the function to make it easier to work with
@@ -667,6 +675,7 @@ class Gp:
         except RuntimeError as e:
             print('Measurement failed outside of GP {}'.format(e))
             self.task_dict['status'] = 'failure'
+            self.measurement_aborted = True
             result = None
             variance = None
 

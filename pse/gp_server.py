@@ -12,7 +12,7 @@ from pse import gp
 app = Flask(__name__)
 gpo = None
 port = None
-task_dict = None
+task_dict = {}
 
 
 def find_free_port():
@@ -31,7 +31,7 @@ def default():
 @app.route("/get_status", methods=['GET'])
 def get_status():
     global task_dict
-    if task_dict is not None:
+    if task_dict:
         return task_dict["status"]
     else:
         return "down"
@@ -62,9 +62,7 @@ def start_server(storage_dir):
 def start_pse():
     """
     POST request function that starts a PSE task.
-
     The POST data must dictioinary must contain the keyword arguments passed to gp init
-
     :return: status message.
     """
     global gpo
@@ -90,9 +88,8 @@ def start_pse():
 @app.route('/stop_pse', methods=['GET'])
 def stop_pse():
     global task_dict
-    if task_dict is not None:
+    if task_dict:
         task_dict["cancelled"] = True
-
     return "Stopping of PSE tasks initialized"
 
 
