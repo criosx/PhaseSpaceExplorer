@@ -6,3 +6,6 @@ gpcam
 pillow
 plotly
 scikit-image
+flask
+werkzeug
+requests
