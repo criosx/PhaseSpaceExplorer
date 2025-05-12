@@ -20,6 +20,7 @@ from lh_manager.liquid_handler.roadmapmethods import (ROADMAP_QCMD_MakeBilayer,
                                                       ROADMAP_QCMD_RinseLoopInjectandMeasure,
                                                       ROADMAP_QCMD_RinseDirectInjectandMeasure,
                                                       ROADMAP_DirectInjecttoQCMD,
+                                                      ROADMAP_QCMD_DirectInjectandMeasure,
                                                       QCMDRecordTag,
                                                       Formulation,
                                                       TransferWithRinse,
@@ -159,7 +160,17 @@ def collect_data(manager: ManagerInterface,
                                                       Use_Bubble_Sensors=True,
                                                       Equilibration_Time=2,
                                                       Measurement_Time=1)
-    
+
+    second_ethanol_rinse = ROADMAP_QCMD_RinseLoopInjectandMeasure(Target_Composition=Composition(solvents=[manager.solvent_from_material('ethanol', fraction=1)], solutes=[]),
+                                                      Volume=1,
+                                                      Injection_Flow_Rate=2,
+                                                      Extra_Volume=0.1,
+                                                      Is_Organic=True,
+                                                      Use_Bubble_Sensors=True,
+                                                      Equilibration_Time=2,
+                                                      Measurement_Time=1)
+
+
     make_bilayer = ROADMAP_QCMD_MakeBilayer(id=str(uuid4()),
                                             Bilayer_Composition=bilayer_composition,
                                             Bilayer_Solvent=isopropanol,
@@ -170,7 +181,7 @@ def collect_data(manager: ManagerInterface,
                                             Use_Rinse_System_for_Buffer=True,
                                             Extra_Volume=0.1,
                                             Rinse_Volume=2.0,
-                                            Flow_Rate=3.0,
+                                            Flow_Rate=2.0,
                                             Exchange_Flow_Rate=0.1,
                                             Equilibration_Time=5.0,
                                             Measurement_Time=3.0)
@@ -185,6 +196,7 @@ def collect_data(manager: ManagerInterface,
             isopropanol_rinse,
             buffer_control,
             second_water_rinse,
+            second_ethanol_rinse,
         ]
     methods += [
         make_bilayer
