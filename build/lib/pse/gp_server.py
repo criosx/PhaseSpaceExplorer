@@ -13,6 +13,7 @@ app = Flask(__name__)
 gpo = None
 port = None
 task_dict = {}
+measurement_inprogress = []
 
 
 def find_free_port():
@@ -41,6 +42,7 @@ def start_server(storage_dir):
     global app
     global port
     global task_dict
+    global measurement_inprogress
 
     print(f"Using storage directory: {storage_dir} for gp.")
 
@@ -54,6 +56,7 @@ def start_server(storage_dir):
     manager = Manager()
     # shared dict between server and subprocesses using the Manager funcitonality
     task_dict = manager.dict({"status": "idle", "progress": "0%", "cancelled": False})
+    measurement_inprogress = manager.list([])
 
     app.run(port=port)
 
@@ -79,7 +82,9 @@ def start_pse():
     task_dict["status"] = "running"
     task_dict["progress"] = "0%"
     task_dict["cancelled"] = False
-    p = Process(target=gpo.run, args=(task_dict, ))
+    # measurement_inprogress is only used for communicating between the child process and subprocesses it spawns
+    # however, I want to avoid a second instance of manager running
+    p = Process(target=gpo.run, args=(task_dict, measurement_inprogress))
     p.start()
 
     return "PSE started"

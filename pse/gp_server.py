@@ -13,7 +13,6 @@ app = Flask(__name__)
 gpo = None
 port = None
 task_dict = {}
-measurement_inprogress = []
 
 
 def find_free_port():
@@ -84,7 +83,7 @@ def start_pse():
     task_dict["cancelled"] = False
     # measurement_inprogress is only used for communicating between the child process and subprocesses it spawns
     # however, I want to avoid a second instance of manager running
-    p = Process(target=gpo.run, args=(task_dict, measurement_inprogress))
+    p = Process(target=gpo.run, args=(task_dict, ))
     p.start()
 
     return "PSE started"
