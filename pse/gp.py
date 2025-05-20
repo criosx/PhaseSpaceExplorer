@@ -437,7 +437,7 @@ class Gp:
         path1 = path.join(self.spath, 'plots')
         if not path.isdir(path1):
             mkdir(path1)
-        # self.plot_arr(self.prediction_gpcam, filename=path.join(path1, 'prediction_gpcam'), mark_maximum=True)
+        # self.results_plot(self.prediction_gpcam, filename=path.join(path1, 'prediction_gpcam'), mark_maximum=True)
 
         if self.show_support_points:
             support_points = self.gpCAMstream['position'].to_numpy()
@@ -446,9 +446,9 @@ class Gp:
         else:
             support_points = None
 
-        self.plot_arr(self.prediction_gpcam,
-                      filename=path.join(path1, 'prediction_gpcam'), mark_maximum=True,
-                      support_points=support_points)
+        self.results_plot(self.prediction_gpcam,
+                          filename=path.join(path1, 'prediction_gpcam'), mark_maximum=True,
+                          support_points=support_points)
 
     def gpcam_prediction(self):
         # create a flattened array of all positions to be evaluated, maximize the use of numpy
@@ -523,8 +523,8 @@ class Gp:
                 self.results_io()
                 path1 = path.join(self.spath, 'plots')
                 filename = path.join(path1, 'prediction_gpcam')
-                self.plot_arr(np.nan_to_num(self.results, nan=0), arr_variance=np.nan_to_num(self.variances, nan=0.0),
-                              filename=filename)
+                self.results_plot(np.nan_to_num(self.results, nan=0), arr_variance=np.nan_to_num(self.variances, nan=0.0),
+                                  filename=filename)
                 work_on_it_list = []
                 work_on_itindex_list = []
 
@@ -553,60 +553,6 @@ class Gp:
 
         with open(path.join(self.spath, 'results', 'current_iterations.pkl'), 'wb') as file:
             pickle.dump(output_df, file)
-
-    def plot_arr(self, arr_value, arr_variance=None, filename='plot', mark_maximum=False, valmin=None, valmax=None,
-                 levels=20, niceticks=False, vallabel='z', support_points=None):
-
-        # onecolormaps = [plt.cm.Greys, plt.cm.Purples, plt.cm.Blues, plt.cm.Greens, plt.cm.Oranges, plt.cm.Reds]
-        ec = plt.colormaps['coolwarm']
-
-        path1 = path.join(self.spath, 'plots')
-
-        if len(arr_value.shape) == 1:
-            ax0 = self.axes[0]
-            sp0 = self.exp_par['name'].tolist()[0]
-            if arr_variance is not None:
-                dy = np.sqrt(arr_variance)
-            else:
-                dy = None
-            save_plot_1d(ax0, arr_value, dy=dy, xlabel=sp0, ylabel=vallabel, filename=path.join(path1, filename),
-                         ymin=valmin, ymax=valmax, levels=levels, niceticks=niceticks, keep_plots=self.keep_plots)
-
-        elif len(arr_value.shape) == 2:
-            # numpy array and plot axes are reversed
-            ax1 = self.axes[0]
-            ax0 = self.axes[1]
-            sp1 = self.exp_par['name'].tolist()[0]
-            sp0 = self.exp_par['name'].tolist()[1]
-            save_plot_2d(ax0, ax1, arr_value, xlabel=sp0, ylabel=sp1, color=ec,
-                         filename=path.join(path1, filename), zmin=valmin, zmax=valmax, levels=levels,
-                         mark_maximum=mark_maximum, keep_plots=self.keep_plots, support_points=support_points)
-
-        elif len(arr_value.shape) == 3 and arr_value.shape[0] < 6:
-            ax2 = self.axes[1]
-            ax1 = self.axes[2]
-            sp2 = self.exp_par['name'].tolist()[1]
-            sp1 = self.exp_par['name'].tolist()[2]
-            for slice_n in range(arr_value.shape[0]):
-                save_plot_2d(ax1, ax2, arr_value[slice_n], xlabel=sp1, ylabel=sp2, color=ec,
-                             filename=path.join(path1, filename+'_'+str(slice_n)), zmin=valmin, zmax=valmax,
-                             levels=levels, mark_maximum=mark_maximum, keep_plots=self.keep_plots)
-
-        if len(arr_value.shape) >= 3:
-            # plot projections onto two parameters at a time
-            for i in range(len(self.exp_par)):
-                for j in range(i):
-                    ax2 = self.axes[i]
-                    ax1 = self.axes[j]
-                    sp2 = self.exp_par['name'].tolist()[i]
-                    sp1 = self.exp_par['name'].tolist()[j]
-                    projection = np.empty((self.steplist[i], self.steplist[j]))
-                    for k in range(self.steplist[i]):
-                        for ll in range(self.steplist[j]):
-                            projection[k, ll] = np.take(np.take(arr_value, indices=k, axis=i), indices=ll, axis=j).max()
-                    save_plot_2d(ax1, ax2, projection, xlabel=sp1, ylabel=sp2, color=ec,
-                                 filename=path.join(path1, filename+'_'+sp1+'_'+sp2), zmin=valmin, zmax=valmax,
-                                 levels=levels, mark_maximum=mark_maximum, keep_plots=self.keep_plots)
 
     def run(self, task_dict, measurements_inprogress, print_queue=None):
         self.task_dict = task_dict
@@ -687,6 +633,59 @@ class Gp:
         else:
             raise NotImplementedError('Unknown optimization method')
 
+    def results_plot(self, arr_value, arr_variance=None, filename='plot', mark_maximum=False, valmin=None, valmax=None,
+                     levels=20, niceticks=False, vallabel='z', support_points=None):
+
+        # onecolormaps = [plt.cm.Greys, plt.cm.Purples, plt.cm.Blues, plt.cm.Greens, plt.cm.Oranges, plt.cm.Reds]
+        ec = plt.colormaps['coolwarm']
+
+        path1 = path.join(self.spath, 'plots')
+
+        if len(arr_value.shape) == 1:
+            ax0 = self.axes[0]
+            sp0 = self.exp_par['name'].tolist()[0]
+            if arr_variance is not None:
+                dy = np.sqrt(arr_variance)
+            else:
+                dy = None
+            save_plot_1d(ax0, arr_value, dy=dy, xlabel=sp0, ylabel=vallabel, filename=path.join(path1, filename),
+                         ymin=valmin, ymax=valmax, levels=levels, niceticks=niceticks, keep_plots=self.keep_plots)
+
+        elif len(arr_value.shape) == 2:
+            # numpy array and plot axes are reversed
+            ax1 = self.axes[0]
+            ax0 = self.axes[1]
+            sp1 = self.exp_par['name'].tolist()[0]
+            sp0 = self.exp_par['name'].tolist()[1]
+            save_plot_2d(ax0, ax1, arr_value, xlabel=sp0, ylabel=sp1, color=ec,
+                         filename=path.join(path1, filename), zmin=valmin, zmax=valmax, levels=levels,
+                         mark_maximum=mark_maximum, keep_plots=self.keep_plots, support_points=support_points)
+
+        elif len(arr_value.shape) == 3 and arr_value.shape[0] < 6:
+            ax2 = self.axes[1]
+            ax1 = self.axes[2]
+            sp2 = self.exp_par['name'].tolist()[1]
+            sp1 = self.exp_par['name'].tolist()[2]
+            for slice_n in range(arr_value.shape[0]):
+                save_plot_2d(ax1, ax2, arr_value[slice_n], xlabel=sp1, ylabel=sp2, color=ec,
+                             filename=path.join(path1, filename+'_'+str(slice_n)), zmin=valmin, zmax=valmax,
+                             levels=levels, mark_maximum=mark_maximum, keep_plots=self.keep_plots)
+
+        if len(arr_value.shape) >= 3:
+            # plot projections onto two parameters at a time
+            for i in range(len(self.exp_par)):
+                for j in range(i):
+                    ax2 = self.axes[i]
+                    ax1 = self.axes[j]
+                    sp2 = self.exp_par['name'].tolist()[i]
+                    sp1 = self.exp_par['name'].tolist()[j]
+                    projection = np.empty((self.steplist[i], self.steplist[j]))
+                    for k in range(self.steplist[i]):
+                        for ll in range(self.steplist[j]):
+                            projection[k, ll] = np.take(np.take(arr_value, indices=k, axis=i), indices=ll, axis=j).max()
+                    save_plot_2d(ax1, ax2, projection, xlabel=sp1, ylabel=sp2, color=ec,
+                                 filename=path.join(path1, filename+'_'+sp1+'_'+sp2), zmin=valmin, zmax=valmax,
+                                 levels=levels, mark_maximum=mark_maximum, keep_plots=self.keep_plots)
 
     def work_on_iteration(self, arguments):
         """
