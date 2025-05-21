@@ -198,8 +198,7 @@ class Gp:
 
         # result queue for communicating with the measurment processes
         self.measurement_results_queue = Queue()
-        self.measurement_inprogress = None
-        self.measurement_requests_queue = Queue()
+        self.measurement_inprogress = []
 
         # initialize new run if result dir is empty
         if resume and not os.listdir(path.join(self.spath, 'results')):
@@ -222,6 +221,8 @@ class Gp:
             else:
                 grids = np.meshgrid(*self.axes, indexing='ij')
                 self.gp_discrete_points = np.stack(grids, axis=-1).reshape(-1, len(self.axes))
+                # make this numpy array into a list of numpy arrays along axis 0
+                self.gp_discrete_points = [self.gp_discrete_points[i] for i in range(self.gp_discrete_points.shape[0])]
             self.hyper_bounds = None
 
             if not resume:
@@ -233,50 +234,29 @@ class Gp:
 
         self.prediction_gpcam = np.zeros(self.steplist)
 
-    def do_measurement(self, optpars, it_label):
+    @staticmethod
+    def do_measurement(optpars, it_label, entry, q):
         """
         This function performs the actual measurement and needs to be implemented in each subclass. Here, a test
         function providing virtual data is provided
         :param optpars: specific set of parameters for the measurement
         :param it_label: a label for the current iteration
+        :entry (dict) the record without the results that will be deposited in the result queue
+        :param q: (multiprocessing.Queue) the result queue
         :return: (result, variance) measurement result
         """
         result = 0
         for par in optpars:
             result += optpars[par] * 2 * np.pi
         variance = np.abs(result * 0.025) + 1e-7
+        time.sleep(1)
 
-        '''
-        argument = 0
-        valid = True
-        last_par = None
+        # THESE THREE LINES NEED DO BE PRESENT IN EVERY DERIVED METHOD
+        # TODO: Make this post-logic seemless and still working with multiprocessing.Process
+        entry['value'] = result
+        entry['variance'] = variance
+        q.put(entry)
 
-        for par in optpars:
-            if last_par is None:
-                last_par = optpars[par]
-            else:
-                if optpars[par] > last_par:
-                    valid = False
-                last_par = optpars[par]
-
-            d = 1 - argument
-            if optpars[par] > 1:
-                p = 1
-            elif optpars[par] < 0:
-                p = 0
-            else:
-                p = optpars[par]
-
-            argument += d * p
-        if valid:
-            result = np.sin(argument*6)
-            variance = np.abs(result * 0.025) + 0.0000001
-        else:
-            result = 0
-            variance = 0.0000001
-        '''
-
-        time.sleep(0.1)
         return result, variance
 
     def gpcam_init_ae(self):
@@ -313,167 +293,120 @@ class Gp:
             self.gpiteration = len(x)
             # tell the optimizer the data that was already collected
             self.my_ae.tell(x, y, v, append=False)
-            firsteval = False
         else:
             x = None
             y = None
             v = None
             self.gpiteration = 0
-            firsteval = True
+        return
 
-        '''
-        Left-over arguments from ae initialization:
-                init_dataset_size=self.gpcam_init_dataset_size,
-                instrument_function=self.gpcam_instrument,
-                # cost_func = optional_cost_function,
-                # cost_update_func = optional_cost_update_function,
-                x_data=x, y_data=y, noise_variances=v,
-                # cost_func_params={"offset": 5.0, "slope": 10.0},
-                kernel_function=None, calc_inv=True,
-                communicate_full_dataset=False, ram_economy=True)
-        '''
-
-        return firsteval
-
-    def gpcam_instrument(self, request_queue, in_progress_list, result_queue, gp_iteration):
+    def gpcam_instrument(self, data):
         """
         The gpcam instrument function that will receive a single data point for measurement. It saves the in-progress
         information and the measurement values and variances to a log list and a result queue, respectively. As this
         function is meant to run in its separate process, these three objects are the only ones shared with the parent.
-        :param request_queue: (multiprocessing.Queue) a queue to guarantee to contain a measurement point for evaluation
-        :param in_progress_list: (list) list of in_progress measurement points
-        :param result_queue: (multiprocessing.Queue) a queue to store the measurement results
-        :param gp_iteration: (int) the current iteration
+        :param data: a data point for measurement
         :return: no return value
         """
 
         # print("This is the current length of the data received by gpCAM: ", len(data))
         # print("Suggested by gpCAM: ", data)
 
-        print("GPCam Instrument...")
-        time.sleep(20)
-
-        data = request_queue.get()
-        current_task_data = (None, data, gp_iteration)
-        in_progress_list.append(current_task_data)
+        current_task_data = (None, data, self.gpiteration)
         self.iterations_inprogress_save_to_file()
-
         # do the measurment
-        value, variance = self.work_on_iteration(current_task_data)
-
-        in_progress_list.remove(current_task_data)
-
-        # Entries for None results will not be returned as they would raise a GPCam error
-        # abortion can be due to measurement failure or task cancellation
-        if value is not None:
-            entry = {'parameter names': self.exp_par['name'].to_list(), 'position': data, 'value': value,
-                     'variance': variance}
-            result_queue.put(entry)
+        self.work_on_iteration(current_task_data)
+        self.gpiteration += 1
 
         return
 
     def gpcam_optimization_loop(self):
-        def submit_measurement(point):
-            print("Submit measurement at {}...".format(point))
-            time.sleep(20)
-            self.measurement_requests_queue.put(point)
-
-            p = Process(
-                target=self.gpcam_instrument,
-                args=(
-                    self.measurement_requests_queue,
-                    self.measurement_inprogress,
-                    self.measurement_results_queue,
-                    self.gpiteration
-                )
-            )
-            print("Starting measurement...")
-            time.sleep(20)
-            p.start()
-            p.join()
-            print('gpCAM loop: Submitted measurement task {} at position {}'.format(self.gpiteration, next_point))
-            self.gpiteration += 1
-
         def collect_measurement(gpcam_initialized=False):
-            print("Collect measurement...")
-            time.sleep(20)
             result = self.measurement_results_queue.get()
-            x = result['position']
-            y = result['value']
-            v = result['variance']
+            x = np.array([result['position']])
+            y = np.array([result['value']])
+            v = np.array([result['variance']])
             print('Colected measurement results x, y, v: {}, {}, {}'.format(x, y, v))
+            print('\n')
             self.my_ae.tell(x, y, v, append=True)
             self.gpCAMstream.loc[len(self.gpCAMstream)] = result
             self.results_io()
+            # remove the current task from the in-progress list
+            self.measurement_inprogress = [item for item in self.measurement_inprogress
+                                           if not np.array_equal(item[1], result['position'])]
             if gpcam_initialized:
                 self.my_ae.update_hyperparameters(opt_obj)
                 self.gpcam_prediction()
                 self.gpcam_plot()
-            print('gpCAM loop: Collected measurment result at point {}'.format(x))
+            return
 
         # Using the gpCAM global optimizer, follows the example from the gpCAM website
-        bFirstEval = self.gpcam_init_ae()
+        self.gpcam_init_ae()
 
         # save and evaluate initial data set if it has been freshly calculate
-        if bFirstEval:
-            print('Starting initial measurements.')
-            while self.gpiteration < self.gpcam_init_dataset_size and not self.task_dict.get("cancelled", False):
-                print("Continue to next iteration...")
-                time.sleep(20)
-                if self.measurement_requests_queue.empty() and (len(self.measurement_inprogress) <
-                                                                self.parallel_measurements):
-                    print('Preparing initial measurement #{}.'.format(self.gpiteration))
-                    if self.gpiteration == 0:
-                        next_point = self.gp_discrete_points[0]
-                    else:
-                        next_point = self.gp_discrete_points[int(np.random.random() * len(self.gp_discrete_points))]
-                    submit_measurement(next_point)
-                elif not self.measurement_results_queue.empty():
-                    collect_measurement(gpcam_initialized=False)
-                else:
-                    # nothing to do
-                    time.sleep(5)
-                    print('gpCAM loop: Nothing to do, yet. Waiting for 5 seconds.')
+        print('Checking if sufficient initial measurements.')
+        while self.gpiteration < self.gpcam_init_dataset_size and not self.task_dict.get("cancelled", False):
 
-            self.gpcam_prediction()
-            self.gpcam_plot()
+            if len(self.measurement_inprogress) < self.parallel_measurements:
+                print('Preparing initial measurement #{}.'.format(self.gpiteration))
+                if self.gpiteration == 0:
+                    next_point = self.gp_discrete_points[0]
+                else:
+                    next_point = self.gp_discrete_points[int(np.random.random() * len(self.gp_discrete_points))]
+                self.gpcam_instrument(next_point)
+            elif not self.measurement_results_queue.empty():
+                collect_measurement(gpcam_initialized=False)
+            else:
+                # nothing to do
+                time.sleep(5)
+                print('gpCAM loop: Nothing to do, yet. Waiting for 5 seconds.')
 
         print("Continue to gpCAM measurments...")
-        time.sleep(20)
 
         opt_obj = self.gpcam_train_async()
+        self.gpcam_prediction()
+        self.gpcam_plot()
 
         while len(self.my_ae.x_data) < self.gpcam_iterations and not self.task_dict.get("cancelled", False):
-            print('gpCAM main loop with abortion signal {}'.format(self.task_dict.get("cancelled", False)))
-            print("length of the dataset: ", len(self.my_ae.x_data))
+            # print('gpCAM main loop with abortion signal {}'.format(self.task_dict.get("cancelled", False)))
+            # print("length of the dataset: ", len(self.my_ae.x_data))
 
+            # first collect any finished measurements as they update the model
+            if not self.measurement_results_queue.empty():
+                collect_measurement(gpcam_initialized=True)
             # can we start another measurment?
-            if self.measurement_requests_queue.empty() and (len(self.measurement_inprogress) <
-                                                            self.parallel_measurements):
+            elif len(self.measurement_inprogress) < self.parallel_measurements:
                 # update hyperparameters
                 print('Hyperparamters:')
                 print(self.my_ae.get_hyperparameters())
-                print(self.gp_discrete_points)
+                n = self.parallel_measurements - len(self.measurement_inprogress)
+                n_max = self.parallel_measurements
 
-                # get the next measurement point based on the discrete input grid
-                next_point = self.my_ae.ask(
+                # get the next measurement point based on the discrete input grid, always ask for n_max
+                # predictions as the highest prediction might already be in progress
+                next_points = self.my_ae.ask(
                     self.gp_discrete_points,
-                    n=1,
+                    n=n_max,
                     acquisition_function=self.acq_func,
                     info=True,
                 )
-                submit_measurement(next_point['x'])
-
-            elif not self.measurement_results_queue.empty():
-                collect_measurement(gpcam_initialized=True)
+                submit_counter = 0
+                for i in range(n_max):
+                    # check if measurment point is already in progress
+                    filter_list = [item for item in self.measurement_inprogress
+                                   if np.array_equal(item[1], next_points['x'][i])]
+                    if not filter_list:
+                        self.gpcam_instrument(next_points['x'][i])
+                        submit_counter += 1
+                    if submit_counter == n:
+                        break
 
             else:
                 if not self.measurement_inprogress:
                     # delete iterations in progress log file
                     self.iterations_inprogress_delete_file()
                 # nothing to do
-                time.sleep(1)
-                print('gpCAM loop: Nothing to do. Waiting for one second.')
+                time.sleep(5)
 
         self.my_ae.stop_training(opt_obj)
 
@@ -524,7 +457,7 @@ class Gp:
         )
 
     def gpcam_train_async(self,):
-        opt_obj = self.my_ae.train(
+        opt_obj = self.my_ae.train_async(
             hyperparameter_bounds=self.hyper_bounds,
             max_iter=10000
         )
@@ -596,10 +529,9 @@ class Gp:
         with open(path.join(self.spath, 'results', 'current_iterations.pkl'), 'wb') as file:
             pickle.dump(output_df, file)
 
-    def run(self, task_dict, measurements_inprogress, print_queue=None):
+    def run(self, task_dict, print_queue=None):
         self.task_dict = task_dict
         self.task_dict['status'] = 'running'
-        self.measurement_inprogress = measurements_inprogress
 
         if self.optimizer == 'grid':
             self.run_optimization_grid()
@@ -729,31 +661,39 @@ class Gp:
                                  filename=path.join(path1, filename+'_'+sp1+'_'+sp2), zmin=valmin, zmax=valmax,
                                  levels=levels, mark_maximum=mark_maximum, keep_plots=self.keep_plots)
 
-    def work_on_iteration(self, arguments):
+    def work_on_iteration(self, current_task_data):
         """
         Performs a single interation (measurement) of either a grid search or gpcam
-        :param arguments: (tuple) it object for grid search, position (x_value) for gpcam, gplabel for gpcam. Not
-                          applying fields can be none, see also yield_optpars_label
+        :param current_task_data: (tuple) it object for grid search, position (x_value) for gpcam, gplabel for gpcam.
+                                    Notvapplying fields can be none, see also yield_optpars_label
         :return: (float, float) result and variance of the performed measurement
         """
+        self.measurement_inprogress.append(current_task_data)
+
         print(self.task_dict)
         if self.task_dict['cancelled']:
             self.task_dict['status'] = 'stopping'
             self.measurement_aborted = True
             return None, None
 
-        optpars, itlabel = self.yield_optpars_label(arguments)
+        optpars, itlabel = self.yield_optpars_label(current_task_data)
         print(itlabel, optpars)
         try:
-            result, variance = self.do_measurement(optpars, itlabel)
+            q = self.measurement_results_queue
+            entry = {'parameter names': self.exp_par['name'].to_list(), 'position': current_task_data[1],
+                     'value': None, 'variance': None}
+            p = Process(
+                target=self.do_measurement,
+                args=(optpars, itlabel, entry, q)
+            )
+            p.start()
         except RuntimeError as e:
             print('Measurement failed outside of GP {}'.format(e))
             self.task_dict['status'] = 'failure'
             self.measurement_aborted = True
-            result = None
-            variance = None
+            self.measurement_inprogress.remove(current_task_data)
 
-        return result, variance
+        return
 
     def yield_optpars_label(self, arguments):
         """

@@ -221,6 +221,8 @@ class Gp:
             else:
                 grids = np.meshgrid(*self.axes, indexing='ij')
                 self.gp_discrete_points = np.stack(grids, axis=-1).reshape(-1, len(self.axes))
+                # make this numpy array into a list of numpy arrays along axis 0
+                self.gp_discrete_points = [self.gp_discrete_points[i] for i in range(self.gp_discrete_points.shape[0])]
             self.hyper_bounds = None
 
             if not resume:
@@ -291,27 +293,12 @@ class Gp:
             self.gpiteration = len(x)
             # tell the optimizer the data that was already collected
             self.my_ae.tell(x, y, v, append=False)
-            firsteval = False
         else:
             x = None
             y = None
             v = None
             self.gpiteration = 0
-            firsteval = True
-
-        '''
-        Left-over arguments from ae initialization:
-                init_dataset_size=self.gpcam_init_dataset_size,
-                instrument_function=self.gpcam_instrument,
-                # cost_func = optional_cost_function,
-                # cost_update_func = optional_cost_update_function,
-                x_data=x, y_data=y, noise_variances=v,
-                # cost_func_params={"offset": 5.0, "slope": 10.0},
-                kernel_function=None, calc_inv=True,
-                communicate_full_dataset=False, ram_economy=True)
-        '''
-
-        return firsteval
+        return
 
     def gpcam_instrument(self, data):
         """
@@ -329,90 +316,97 @@ class Gp:
         self.iterations_inprogress_save_to_file()
         # do the measurment
         self.work_on_iteration(current_task_data)
-
-        print('gpCAM loop: Submitted measurement task {} at position {}'.format(self.gpiteration, data))
         self.gpiteration += 1
 
         return
 
     def gpcam_optimization_loop(self):
         def collect_measurement(gpcam_initialized=False):
-            print("Collect measurement...")
-            time.sleep(20)
             result = self.measurement_results_queue.get()
-            x = result['position']
-            y = result['value']
-            v = result['variance']
+            x = np.array([result['position']])
+            y = np.array([result['value']])
+            v = np.array([result['variance']])
             print('Colected measurement results x, y, v: {}, {}, {}'.format(x, y, v))
+            print('\n')
             self.my_ae.tell(x, y, v, append=True)
             self.gpCAMstream.loc[len(self.gpCAMstream)] = result
             self.results_io()
+            # remove the current task from the in-progress list
+            self.measurement_inprogress = [item for item in self.measurement_inprogress
+                                           if not np.array_equal(item[1], result['position'])]
             if gpcam_initialized:
                 self.my_ae.update_hyperparameters(opt_obj)
                 self.gpcam_prediction()
                 self.gpcam_plot()
-            print('gpCAM loop: Collected measurment result at point {}'.format(x))
+            return
 
         # Using the gpCAM global optimizer, follows the example from the gpCAM website
-        bFirstEval = self.gpcam_init_ae()
+        self.gpcam_init_ae()
 
         # save and evaluate initial data set if it has been freshly calculate
-        if bFirstEval:
-            print('Starting initial measurements.')
-            while self.gpiteration < self.gpcam_init_dataset_size and not self.task_dict.get("cancelled", False):
+        print('Checking if sufficient initial measurements.')
+        while self.gpiteration < self.gpcam_init_dataset_size and not self.task_dict.get("cancelled", False):
 
-                if len(self.measurement_inprogress) < self.parallel_measurements:
-                    print('Preparing initial measurement #{}.'.format(self.gpiteration))
-                    if self.gpiteration == 0:
-                        next_point = self.gp_discrete_points[0]
-                    else:
-                        next_point = self.gp_discrete_points[int(np.random.random() * len(self.gp_discrete_points))]
-                    self.gpcam_instrument(next_point)
-                elif not self.measurement_results_queue.empty():
-                    collect_measurement(gpcam_initialized=False)
+            if len(self.measurement_inprogress) < self.parallel_measurements:
+                print('Preparing initial measurement #{}.'.format(self.gpiteration))
+                if self.gpiteration == 0:
+                    next_point = self.gp_discrete_points[0]
                 else:
-                    # nothing to do
-                    time.sleep(5)
-                    print('gpCAM loop: Nothing to do, yet. Waiting for 5 seconds.')
-
-            self.gpcam_prediction()
-            self.gpcam_plot()
+                    next_point = self.gp_discrete_points[int(np.random.random() * len(self.gp_discrete_points))]
+                self.gpcam_instrument(next_point)
+            elif not self.measurement_results_queue.empty():
+                collect_measurement(gpcam_initialized=False)
+            else:
+                # nothing to do
+                time.sleep(5)
+                print('gpCAM loop: Nothing to do, yet. Waiting for 5 seconds.')
 
         print("Continue to gpCAM measurments...")
-        time.sleep(20)
 
         opt_obj = self.gpcam_train_async()
+        self.gpcam_prediction()
+        self.gpcam_plot()
 
         while len(self.my_ae.x_data) < self.gpcam_iterations and not self.task_dict.get("cancelled", False):
-            print('gpCAM main loop with abortion signal {}'.format(self.task_dict.get("cancelled", False)))
-            print("length of the dataset: ", len(self.my_ae.x_data))
+            # print('gpCAM main loop with abortion signal {}'.format(self.task_dict.get("cancelled", False)))
+            # print("length of the dataset: ", len(self.my_ae.x_data))
 
+            # first collect any finished measurements as they update the model
+            if not self.measurement_results_queue.empty():
+                collect_measurement(gpcam_initialized=True)
             # can we start another measurment?
-            if len(self.measurement_inprogress) < self.parallel_measurements:
+            elif len(self.measurement_inprogress) < self.parallel_measurements:
                 # update hyperparameters
                 print('Hyperparamters:')
                 print(self.my_ae.get_hyperparameters())
-                print(self.gp_discrete_points)
+                n = self.parallel_measurements - len(self.measurement_inprogress)
+                n_max = self.parallel_measurements
 
-                # get the next measurement point based on the discrete input grid
-                next_point = self.my_ae.ask(
+                # get the next measurement point based on the discrete input grid, always ask for n_max
+                # predictions as the highest prediction might already be in progress
+                next_points = self.my_ae.ask(
                     self.gp_discrete_points,
-                    n=1,
+                    n=n_max,
                     acquisition_function=self.acq_func,
                     info=True,
                 )
-                self.gpcam_instrument(next_point['x'])
-
-            elif not self.measurement_results_queue.empty():
-                collect_measurement(gpcam_initialized=True)
+                submit_counter = 0
+                for i in range(n_max):
+                    # check if measurment point is already in progress
+                    filter_list = [item for item in self.measurement_inprogress
+                                   if np.array_equal(item[1], next_points['x'][i])]
+                    if not filter_list:
+                        self.gpcam_instrument(next_points['x'][i])
+                        submit_counter += 1
+                    if submit_counter == n:
+                        break
 
             else:
                 if not self.measurement_inprogress:
                     # delete iterations in progress log file
                     self.iterations_inprogress_delete_file()
                 # nothing to do
-                time.sleep(1)
-                print('gpCAM loop: Nothing to do. Waiting for one second.')
+                time.sleep(5)
 
         self.my_ae.stop_training(opt_obj)
 
@@ -463,7 +457,7 @@ class Gp:
         )
 
     def gpcam_train_async(self,):
-        opt_obj = self.my_ae.train(
+        opt_obj = self.my_ae.train_async(
             hyperparameter_bounds=self.hyper_bounds,
             max_iter=10000
         )
