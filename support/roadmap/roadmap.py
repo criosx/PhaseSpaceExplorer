@@ -1,3 +1,4 @@
+import copy
 import datetime
 import json
 import numpy as np
@@ -11,6 +12,7 @@ from uuid import uuid4
 
 from .manager import MANAGER_ADDRESS, ManagerInterface
 from ..gp import Gp
+from gpcam import GPOptimizer
 
 from lh_manager.liquid_handler.bedlayout import Composition
 from lh_manager.liquid_handler.formulation import SoluteFormulation
@@ -18,6 +20,7 @@ from lh_manager.liquid_handler.roadmapmethods import (ROADMAP_QCMD_MakeBilayer,
                                                       ROADMAP_QCMD_RinseLoopInjectandMeasure,
                                                       ROADMAP_QCMD_RinseDirectInjectandMeasure,
                                                       ROADMAP_DirectInjecttoQCMD,
+                                                      ROADMAP_QCMD_DirectInjectandMeasure,
                                                       QCMDRecordTag,
                                                       Formulation,
                                                       TransferWithRinse,
@@ -27,10 +30,63 @@ from lh_manager.liquid_handler.roadmapmethods import (ROADMAP_QCMD_MakeBilayer,
                                                       
 from lh_manager.liquid_handler.samplelist import Sample, MethodList
 
+def acq_variance_target(x: np.ndarray, gpoptimizer: GPOptimizer):
+
+    #print(x, x.shape)
+    #print(gpoptimizer.posterior_covariance(x, variance_only=True)['v(x)'], gpoptimizer.posterior_mean(x)['f(x)'])
+    retval = np.array(gpoptimizer.posterior_covariance(x, variance_only=True)['v(x)']) / (np.array(gpoptimizer.posterior_mean(x)['f(x)']) + 25) ** 2
+    #print(retval)
+    return retval
+
+def acq_variance_target_add(x: np.ndarray, gpoptimizer: GPOptimizer):
+
+    #print(x, x.shape)
+    #print(gpoptimizer.posterior_covariance(x, variance_only=True)['v(x)'], gpoptimizer.posterior_mean(x)['f(x)'])
+    retval = 3 * np.array(gpoptimizer.posterior_covariance(x, variance_only=True)['v(x)']) + 1.0 / (np.array(gpoptimizer.posterior_mean(x)['f(x)']) + 25) ** 2
+    #print(retval)
+    return retval
+
+def collect_data_sleep(manager: ManagerInterface,
+                 bilayer_composition: Composition,
+                 sample_name: str,
+                 description: str,
+                 channel: int = 0,
+                 control: bool = True,
+                 stop_event: Event = Event()) -> tuple[float, float]:
+    """Performs a bilayer formation measurement with a lipid composition and total lipid concentration.
+    
+        TODO: for now, assumes a single channel = 0, but in the future could implement a channel selector
+                based on the inputs (substrate) or a rolling counter
+
+    Args:
+        lipids (dict[str, float]): dictionary with lipid name as the key and concentration of that lipid as the value
+        concentration (float): total lipid concentration in mg/mL
+        sample_name (str): name of sample
+        description (str): description of data set
+        control (bool, optional): if True, collect a control measurement. Default True.
+
+    Returns:
+        tuple[float, float]: normalized change in QCMD frequency and error
+    """
+
+    # Initiate sample
+    sample = Sample(name=sample_name,
+        description=repr(bilayer_composition) + ', started ' + description,
+        channel=channel,
+        stages={'methods': MethodList()})
+
+    sample = manager.new_sample(sample=sample)        
+
+    time.sleep(30)
+
+    # parse and combine the results
+    return {'control': {}, 'measure': {}}
+
 def collect_data(manager: ManagerInterface,
                  bilayer_composition: Composition,
                  sample_name: str,
                  description: str,
+                 channel: int = 0,
                  control: bool = True,
                  stop_event: Event = Event()) -> tuple[float, float]:
     """Performs a bilayer formation measurement with a lipid composition and total lipid concentration.
@@ -86,8 +142,8 @@ def collect_data(manager: ManagerInterface,
     
     buffer_control = ROADMAP_QCMD_RinseLoopInjectandMeasure(id=str(uuid4()),
                                                             Target_Composition=buffer_composition,
-                                                      Volume=1,
-                                                      Injection_Flow_Rate=2,
+                                                      Volume=1.5,
+                                                      Injection_Flow_Rate=0.1,
                                                       Extra_Volume=0.1,
                                                       Is_Organic=False,
                                                       Use_Bubble_Sensors=True,
@@ -104,41 +160,52 @@ def collect_data(manager: ManagerInterface,
                                                       Use_Bubble_Sensors=True,
                                                       Equilibration_Time=2,
                                                       Measurement_Time=1)
-    
+
+    second_ethanol_rinse = ROADMAP_QCMD_RinseLoopInjectandMeasure(Target_Composition=Composition(solvents=[manager.solvent_from_material('ethanol', fraction=1)], solutes=[]),
+                                                      Volume=1,
+                                                      Injection_Flow_Rate=2,
+                                                      Extra_Volume=0.1,
+                                                      Is_Organic=True,
+                                                      Use_Bubble_Sensors=True,
+                                                      Equilibration_Time=2,
+                                                      Measurement_Time=1)
+
+
     make_bilayer = ROADMAP_QCMD_MakeBilayer(id=str(uuid4()),
                                             Bilayer_Composition=bilayer_composition,
                                             Bilayer_Solvent=isopropanol,
                                             Use_Rinse_System_for_Solvent=True,
                                             Lipid_Injection_Volume=1.0,
                                             Buffer_Composition=buffer_composition,
-                                            Buffer_Injection_Volume=1.2,
+                                            Buffer_Injection_Volume=1.5,
                                             Use_Rinse_System_for_Buffer=True,
                                             Extra_Volume=0.1,
                                             Rinse_Volume=2.0,
-                                            Flow_Rate=3.0,
+                                            Flow_Rate=2.0,
                                             Exchange_Flow_Rate=0.1,
                                             Equilibration_Time=5.0,
                                             Measurement_Time=3.0)
     
     # set up running protocol. Note that measurement methods must have an ID
     methods = [
+        water_rinse,
         ethanol_rinse,
-        isopropanol_rinse
         ]
     if control:
         methods += [
-            water_rinse,
-            buffer_control
+            isopropanol_rinse,
+            buffer_control,
+            second_water_rinse,
+            second_ethanol_rinse,
         ]
     methods += [
-        second_water_rinse,
         make_bilayer
     ]
 
     # Initiate sample
     sample = Sample(name=sample_name,
         description=repr(bilayer_composition) + ', started ' + description,
-        channel=0,
+        channel=channel,
         stages={'methods': MethodList()})
 
     sample = manager.new_sample(sample=sample)        
@@ -201,10 +268,16 @@ def reduce_qcmd(meas: dict, control: dict, harmonic_power: float = 1) -> float:
 
     diffs = np.array(diffs)[1:]
     diff_errs = np.array(diff_errs)[1:]
+    weights = 1. / diff_errs ** 2
     print(diffs, diff_errs)
 
-    average = np.average(diffs)
-    mix_variance = np.average(diff_errs ** 2 + diffs ** 2) - average ** 2
+    # weights are the individual variances
+    average = np.average(diffs, weights=weights)
+    mix_variance = np.average(diff_errs ** 2 + diffs ** 2, weights=weights) - average ** 2
+    
+    # apply Bessel correction https://en.wikipedia.org/wiki/Weighted_arithmetic_mean#Weighted_sample_variance
+    # does this apply to a mixture distribution?
+    #corrected_variance = mix_variance / (1 - sum(weights ** 2) / sum(weights) ** 2)
 
     return average, mix_variance
 
@@ -340,13 +413,24 @@ class ROADMAP_Gp(Gp):
             TODO: stock solutions need to be stored.
         """
 
+        # set acquisition function
+        self.acq_func = acq_variance_target
+
+        # set number of channels
+        self.n_channels = 1
+
+        # set target value for acquisition function
+        self.target_value = -25
+
         # control measurement
-        self.controls: dict | None = self.load_controls()
-        if len(self.controls):
-            # take most recent control (should always be one)
-            self.current_control: str = list(self.controls.keys())[-1]
-        else:
-            self.current_control = None
+        self.controls: dict[str, dict] = self.load_controls()
+        self.current_control: list[str] = [None for _ in range(self.n_channels)]
+        for channel in range(self.n_channels):
+            if len(self.controls[str(channel)]):
+                # take most recent control (should always be one)
+                self.current_control[channel] = list(self.controls[str(channel)].keys())[-1]
+            else:
+                self.current_control[channel] = None
         
         # how often to collect control measurements
         self.control_cycle = 4
@@ -378,17 +462,17 @@ class ROADMAP_Gp(Gp):
 
     def load_controls(self) -> dict:
 
-        controls = {}
+        controls = {str(i): {} for i in range(self.n_channels)}
         storage_path = Path(self.spath) / 'results' / 'results.json'
         if storage_path.exists():
             with open(storage_path, 'r') as f:
                 current_results: dict = json.load(f)
 
-            controls = current_results.get('controls', {})
+            controls = current_results.get('controls', controls)
 
         return controls
 
-    def save_result(self, it_label: str, parameters: dict, raw_result: dict, reduced_result: dict):
+    def save_result(self, it_label: str, parameters: dict, raw_result: dict, control_id: str, reduced_result: dict):
 
         storage_path = Path(self.spath) / 'results' / 'results.json'
         if storage_path.exists():
@@ -400,7 +484,7 @@ class ROADMAP_Gp(Gp):
 
         current_results.update({'controls': self.controls,
                                 str(it_label): dict(parameters=parameters,
-                                                    control=self.current_control,
+                                                    control=control_id,
                                                    raw_result=raw_result,
                                                    reduced_result=reduced_result)})
         with open(storage_path, 'w') as f:
@@ -408,23 +492,43 @@ class ROADMAP_Gp(Gp):
 
     def do_measurement_test(self, optpars, it_label):
         
-        total_time = 0
-        while (not self.stop_event.is_set()) & (total_time < 6):
-            time.sleep(2)
-            total_time += 2
+        lipid_dict = {}
+        frac_remaining = 1.0
+        for compound, stock_conc in self.lipids.items():
+            frac = optpars.get(compound, 0.0)
+            lipid_dict[compound] = frac * frac_remaining * stock_conc
+            frac_remaining *= (1.0 - frac)
 
-        return 0.1, 0.1
+        total_concentration = sum(f for f in lipid_dict.values())
+
+        result = -25 * (0.5 * (1 + erf((total_concentration - 0.6) / np.sqrt(2 * 0.3 ** 2))) + \
+                        1.5 * (1 + erf((lipid_dict.get('DOPE', 0.0) - 1.0) / np.sqrt(2 * 0.3 ** 2))) + \
+                        1.0 * (1 + erf((lipid_dict.get('POPG', 0.0) - 1.5) / np.sqrt(2 * 0.3 ** 2))))
+        variance = np.sqrt(np.abs(result))
+
+        time.sleep(2)
+
+        return result, variance            
+
+    def gpcam_instrument(self, data):
+        if self.gpiteration == 0:
+            data[0]['x_data'] = np.zeros(len(self.lipids))
+
+        return super().gpcam_instrument(data)
 
     def do_measurement(self, optpars: dict, it_label: str):
+
+        # determine channel number
+        channel = int(it_label) % self.n_channels
 
         # Configure a particular problem with a set of N lipids. Then there are N-1 keywords describing the composition, plus 1 for the total concentration.
         # Calculate the composition we expect from optpars.
         lipid_dict = {}
         frac_remaining = 1.0
         for compound, stock_conc in self.lipids.items():
-            frac = optpars.get(compound, 0.0) * frac_remaining
-            frac_remaining *= (frac_remaining - frac)
-            lipid_dict[compound] = frac * stock_conc
+            frac = optpars.get(compound, 0.0)
+            lipid_dict[compound] = frac * frac_remaining * stock_conc
+            frac_remaining *= (1.0 - frac)
 
         total_concentration = sum(f for f in lipid_dict.values())
 
@@ -457,21 +561,24 @@ class ROADMAP_Gp(Gp):
             raise RuntimeError('Cannot make composition ' + repr(bilayer_formulation))
         
         # collect data, including control if necessary, and increment control counter
-        new_control = (((int(it_label) % self.control_cycle) == 0) | (len(self.controls)==0))
+        channel_counter = (int(it_label) - channel) // self.n_channels
+        new_control = (((channel_counter % self.control_cycle) == 0) | (len(self.controls[str(channel)])==0))
+        print(f'Iteration {it_label} in channel {channel} with channel-specific counter {channel_counter}')
         
         sample_name = f'{self.project_name} point {it_label}'
         description = datetime.datetime.now().strftime("%Y%m%d %H.%M.%S")
-        if 'ipa_fract   ion' in optpars:
+        if 'ipa_fraction' in optpars:
             res: dict = collect_wateripa(self.manager, optpars['ipa_fraction'], sample_name, description, control=new_control, stop_event=self.stop_event)
             harmonic_power = 0.5
         else:
-            res: dict = collect_data(self.manager, bilayer_composition, sample_name, description, control=new_control, stop_event=self.stop_event)
+            res: dict = collect_data(self.manager, bilayer_composition, sample_name, description, channel=channel, control=new_control, stop_event=self.stop_event)
             harmonic_power = 1.0
 
         # replace current value of control if applicable
         if new_control:
-            self.current_control = str(uuid4())
-            self.controls[self.current_control] = res['control']
+            new_id = str(uuid4())
+            self.current_control[channel] = new_id
+            self.controls[str(channel)][new_id] = res['control']
 
         parameters = {'optpars': optpars,
                       'actual_composition': real_composition.model_dump(),
@@ -481,12 +588,15 @@ class ROADMAP_Gp(Gp):
                       'harmonic_power': harmonic_power}
 
         # reduce data with most recent control
-        results, variance = reduce_qcmd(res['measure'], self.controls[self.current_control], harmonic_power)
+        results, variance = None, None
+        if res['measure'] is not None:
+            if len(res['measure']):
+                results, variance = reduce_qcmd(res['measure'], self.controls[str(channel)][self.current_control[channel]], harmonic_power)
 
         #res = {'measure': None, 'control': None}
-        #results, variance = 0.0, 0.0
+        #results, variance = 0.0, 0.01
 
-        self.save_result(it_label, parameters, raw_result=res, reduced_result=dict(results=results,
+        self.save_result(it_label, parameters, raw_result=res, control_id=self.current_control[channel], reduced_result=dict(results=results,
                                                                                 variance=variance))
 
         return results, variance
