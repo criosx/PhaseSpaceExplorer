@@ -338,8 +338,12 @@ opt_acq = 'variance'
 gp_iter = 50
 if opt_optimizer == 'gpcam':
     gp_iter = col_opt_3.number_input('GP iterations', min_value=20, value=1000, format='%i', step=100)
-    opt_acq = col_opt_3.selectbox("GP acquisition function", ['variance', 'ucb', 'relative information entropy',
-                                                              'probability of improvement'])
+    opt_acq = col_opt_3.selectbox("GP acquisition function", ['variance', 'ucb', 'lcb', 'maximum', 'minimum',
+                                                              'gradient', 'total correlation', 'expected improvement',
+                                                              'probability of improvement',
+                                                              'relative information entropy',
+                                                              'relative information entropy set',
+                                                              'target probability'])
 
 parallel_meas = col_opt_4.number_input('Parallel measurements', min_value=1, value=1, step=1, format='%i')
 

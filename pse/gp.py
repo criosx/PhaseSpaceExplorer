@@ -233,6 +233,7 @@ class Gp:
                 self.results_io(load=True)
 
         self.prediction_gpcam = np.zeros(self.steplist)
+        self.prediction_var_gpcam = np.zeros(self.steplist)
 
     @staticmethod
     def do_measurement(optpars, it_label, entry, q):
@@ -300,26 +301,6 @@ class Gp:
             self.gpiteration = 0
         return
 
-    def gpcam_instrument(self, data):
-        """
-        The gpcam instrument function that will receive a single data point for measurement. It saves the in-progress
-        information and the measurement values and variances to a log list and a result queue, respectively. As this
-        function is meant to run in its separate process, these three objects are the only ones shared with the parent.
-        :param data: a data point for measurement
-        :return: no return value
-        """
-
-        # print("This is the current length of the data received by gpCAM: ", len(data))
-        # print("Suggested by gpCAM: ", data)
-
-        current_task_data = (None, data, self.gpiteration)
-        self.iterations_inprogress_save_to_file()
-        # do the measurment
-        self.work_on_iteration(current_task_data)
-        self.gpiteration += 1
-
-        return
-
     def gpcam_optimization_loop(self):
         def collect_measurement(gpcam_initialized=False):
             result = self.measurement_results_queue.get()
@@ -334,6 +315,8 @@ class Gp:
             # remove the current task from the in-progress list
             self.measurement_inprogress = [item for item in self.measurement_inprogress
                                            if not np.array_equal(item[1], result['position'])]
+            progress = float(len(self.gpCAMstream)) / float(self.gpcam_iterations)
+            self.task_dict['progress'] = '{:.2f}%'.format(progress * 100)
             if gpcam_initialized:
                 self.my_ae.update_hyperparameters(opt_obj)
                 self.gpcam_prediction()
@@ -347,19 +330,19 @@ class Gp:
         print('Checking if sufficient initial measurements.')
         while self.gpiteration < self.gpcam_init_dataset_size and not self.task_dict.get("cancelled", False):
 
-            if len(self.measurement_inprogress) < self.parallel_measurements:
+            if not self.measurement_results_queue.empty():
+                collect_measurement(gpcam_initialized=False)
+            elif len(self.measurement_inprogress) < self.parallel_measurements:
                 print('Preparing initial measurement #{}.'.format(self.gpiteration))
                 if self.gpiteration == 0:
                     next_point = self.gp_discrete_points[0]
                 else:
                     next_point = self.gp_discrete_points[int(np.random.random() * len(self.gp_discrete_points))]
-                self.gpcam_instrument(next_point)
-            elif not self.measurement_results_queue.empty():
-                collect_measurement(gpcam_initialized=False)
+                self.work_on_iteration(next_point, self.gpiteration)
+                self.gpiteration += 1
             else:
                 # nothing to do
                 time.sleep(5)
-                print('gpCAM loop: Nothing to do, yet. Waiting for 5 seconds.')
 
         print("Continue to gpCAM measurments...")
 
@@ -396,7 +379,8 @@ class Gp:
                     filter_list = [item for item in self.measurement_inprogress
                                    if np.array_equal(item[1], next_points['x'][i])]
                     if not filter_list:
-                        self.gpcam_instrument(next_points['x'][i])
+                        self.work_on_iteration(next_points['x'][i], self.gpiteration)
+                        self.gpiteration += 1
                         submit_counter += 1
                     if submit_counter == n:
                         break
@@ -408,7 +392,7 @@ class Gp:
                 # nothing to do
                 time.sleep(5)
 
-        self.my_ae.stop_training(opt_obj)
+        self.my_ae.kill_client(opt_obj)
 
     def gpcam_plot(self):
         path1 = path.join(self.spath, 'plots')
@@ -428,26 +412,25 @@ class Gp:
                           support_points=support_points)
 
     def gpcam_prediction(self):
-        # create a flattened array of all positions to be evaluated, maximize the use of numpy
-        prediction_positions = np.array(self.axes[0])
-        for i in range(1, len(self.axes)):
-            a = np.array([prediction_positions] * len(self.axes[i]))
-            # transpose the first two axes of a only
-            newshape = np.linspace(0, len(a.shape) - 1, len(a.shape), dtype=int)
-            newshape[0] = 1
-            newshape[1] = 0
-            a = np.transpose(a, newshape)
-            b = np.array([self.axes[i]] * prediction_positions.shape[0])
-            prediction_positions = np.dstack((a, b))
-            # now flatten the first two dimensions
-            newshape = list(prediction_positions.shape[1:])
-            newshape[0] = newshape[0] * prediction_positions.shape[0]
-            newshape = tuple(newshape)
-            prediction_positions = np.reshape(prediction_positions, newshape)
+        """
+        Creates a gp model prediction on all input points defined by the axes and steps of the optimization
+        problem defined during object intialization.
+        :return: no return value
+        """
 
-        res = self.my_ae.posterior_mean(prediction_positions)
-        f = res["f(x)"]
-        self.prediction_gpcam = f.reshape(self.steplist)
+        # TODO: This creates all input positions of the range defined by the axes and stepsizes, if there is a non-
+        #   Eucledian input space for the gpOptimizer provided, this is ignored here. The idea is that non-Eucledian
+        #   plotting is a nightmare in this module. However, some filtering against the non-Euclidean input might be
+        #   desirable.
+
+        mesh = np.meshgrid(*self.axes, indexing='ij')
+        stacked = np.stack(mesh, axis=-1)
+        prediction_positions = stacked.reshape(-1, len(self.axes))
+
+        mean = self.my_ae.posterior_mean(prediction_positions)["f(x)"]
+        var = self.my_ae.posterior_covariance(prediction_positions, variance_only=True, add_noise=False)["v(x)"]
+        self.prediction_gpcam = mean.reshape(self.steplist)
+        self.prediction_var_gpcam = var.reshape(self.steplist)
 
     def gpcam_train(self, method='mcmc'):
         self.my_ae.train(
@@ -464,44 +447,63 @@ class Gp:
         return opt_obj
 
     def gridsearch_iterate_over_all_indices(self, refinement=False):
+        def collect_measurement():
+            result = self.measurement_results_queue.get()
+            x = np.array([result['position']])
+            y = np.array([result['value']])
+            v = np.array([result['variance']])
+            print('Colected measurement results x, y, v: {}, {}, {}'.format(x, y, v))
+            print('\n')
+
+            # recreate indices
+            xflat = np.asarray(x).flatten()
+            indices = [np.where(np.asarray(axis) == value)[0][0] for axis, value in zip(self.axes, xflat)]
+            # the tuple() avoids fancy indexing since indices is a numpy array
+            self.results[tuple(indices)] = y
+            self.variances[tuple(indices)] = v
+            self.n_iter[tuple(indices)] += 1
+
+            # remove the current task from the in-progress list
+            self.measurement_inprogress = [item for item in self.measurement_inprogress
+                                           if not np.array_equal(item[1], result['position'])]
+            progress = float(np.ravel_multi_index(itindex, self.steplist)) / float(np.prod(self.steplist))
+            self.task_dict['progress'] = '{:.2f}%'.format(progress * 100)
+
+            self.results_io()
+            path1 = path.join(self.spath, 'plots')
+            filename = path.join(path1, 'prediction_gpcam')
+            self.results_plot(np.nan_to_num(self.results, nan=0), arr_variance=np.nan_to_num(self.variances, nan=0.0),
+                              filename=filename)
+            return
+
         bWorkedOnIndex = False
         # the complicated iteration syntax is due the unknown dimensionality of the results space / arrays
         it = np.nditer(self.results, flags=['multi_index'])
-        work_on_it_list = []
-        work_on_itindex_list = []
-        while not it.finished and not self.measurement_aborted:
-            itindex = it.multi_index
-            # run iteration if it is first time or the value in results is nan
-            print('index : {}'.format(itindex))
-            invalid_result = np.isnan(self.results[itindex])
-            insufficient_iterations = self.n_iter[itindex] < self.miniter
-            # Do we need to work on this particular index?
-            if invalid_result or insufficient_iterations:
-                bWorkedOnIndex = True
-                work_on_it_list.append((it.copy(), None, None))
-                work_on_itindex_list.append(itindex)
 
-            it.iternext()
-            if (it.finished and work_on_it_list) or len(work_on_it_list) == self.parallel_measurements:
-                print('parallel measurements: {}'.format(self.parallel_measurements))
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    print('submit jobs ...')
-                    results = list(executor.map(self.work_on_iteration, work_on_it_list))
-                    print('receive jobs ...')
-                for i, entry in enumerate(results):
-                    if entry[0] is not None:
-                        self.results[work_on_itindex_list[i]] = entry[0]
-                        self.variances[work_on_itindex_list[i]] = entry[1]
-                        self.n_iter[work_on_itindex_list[i]] += 1
-                    else:
-                        self.measurement_aborted = True
-                self.results_io()
-                path1 = path.join(self.spath, 'plots')
-                filename = path.join(path1, 'prediction_gpcam')
-                self.results_plot(np.nan_to_num(self.results, nan=0), arr_variance=np.nan_to_num(self.variances, nan=0.0),
-                                  filename=filename)
-                work_on_it_list = []
-                work_on_itindex_list = []
+        while not it.finished and not self.measurement_aborted:
+            # first collect any finished measurements
+            if not self.measurement_results_queue.empty():
+                collect_measurement()
+            elif len(self.measurement_inprogress) < self.parallel_measurements:
+                itindex = it.multi_index
+                print('index : {}'.format(itindex))
+                # run iteration if it is first time or the value in results is nan
+                invalid_result = np.isnan(self.results[itindex])
+                insufficient_iterations = self.n_iter[itindex] < self.miniter
+                print('Result present: {}, Insufficient iterations: {}'.format(not invalid_result,
+                                                                               insufficient_iterations))
+                # Do we need to work on this particular index?
+                if invalid_result or insufficient_iterations:
+                    bWorkedOnIndex = True
+                    position = [self.axes[n][itindex[n]] for n in range(len(self.axes))]
+                    itlabel = np.ravel_multi_index(itindex, self.steplist)
+                    self.work_on_iteration(position, itlabel)
+                it.iternext()
+            else:
+                if not self.measurement_inprogress:
+                    # delete iterations in progress log file
+                    self.iterations_inprogress_delete_file()
+                time.sleep(5)
 
         return bWorkedOnIndex
 
@@ -521,7 +523,12 @@ class Gp:
         """
         output_df = pd.DataFrame()
         for argument in self.measurement_inprogress:
-            optpars, itlabel = self.yield_optpars_label(argument)
+            _, position, itlabel = argument
+            optpars = {}
+            # cycle through all parameters
+            for isim, row in enumerate(self.exp_par.itertuples()):
+                optvalue = position[isim]
+                optpars[row.name] = optvalue
             optpars['storage label'] = itlabel
             new_row = pd.DataFrame([optpars])
             output_df = pd.concat([output_df, new_row], ignore_index=True)
@@ -661,14 +668,16 @@ class Gp:
                                  filename=path.join(path1, filename+'_'+sp1+'_'+sp2), zmin=valmin, zmax=valmax,
                                  levels=levels, mark_maximum=mark_maximum, keep_plots=self.keep_plots)
 
-    def work_on_iteration(self, current_task_data):
+    def work_on_iteration(self, position, itlabel):
         """
         Performs a single interation (measurement) of either a grid search or gpcam
-        :param current_task_data: (tuple) it object for grid search, position (x_value) for gpcam, gplabel for gpcam.
-                                    Notvapplying fields can be none, see also yield_optpars_label
+        :param position: (tuple, list) parameter values to measure next
+        :param itlabel: (any) some iteration label to identify the current iteration
         :return: (float, float) result and variance of the performed measurement
         """
+        current_task_data = (None, position, itlabel)
         self.measurement_inprogress.append(current_task_data)
+        self.iterations_inprogress_save_to_file()
 
         print(self.task_dict)
         if self.task_dict['cancelled']:
@@ -676,7 +685,12 @@ class Gp:
             self.measurement_aborted = True
             return None, None
 
-        optpars, itlabel = self.yield_optpars_label(current_task_data)
+        optpars = {}
+        # cycle through all parameters
+        for isim, row in enumerate(self.exp_par.itertuples()):
+            optvalue = position[isim]
+            optpars[row.name] = optvalue
+
         print(itlabel, optpars)
         try:
             q = self.measurement_results_queue
@@ -695,44 +709,6 @@ class Gp:
 
         return
 
-    def yield_optpars_label(self, arguments):
-        """
-        Helper function that creates a dictionary of parameter names and their values plus a label for the current
-        iteration.
-        :param arguments: (tuple) it object for grid search, position (x_value) for gpcam, gplabel for gpcam. Not
-                          applying fields can be none
-        :return: (dict, label) dictionary with parameter names as keys and their values as values and a label used
-                 for storage of the iteration
-        """
-
-        it, position, gpiteration = arguments
-
-        if it is not None:
-            # provide some running index for grid search for possible use as storage label
-            itindex = it.multi_index
-            itlabel = it.iterindex
-        else:
-            # gpcammode
-            itlabel = gpiteration
-
-        optpars = {}
-        # cycle through all parameters
-        for isim, row in enumerate(self.exp_par.itertuples()):
-            lopt = self.exp_par.loc[self.exp_par['name'] == row.name, 'lower_opt'].iloc[0]
-            stepopt = self.exp_par.loc[self.exp_par['name'] == row.name, 'step_opt'].iloc[0]
-            # value = self.exp_par.loc[self.exp_par['name'] == row.name, 'value'].iloc[0]
-
-            if it is not None:
-                # grid mode, calculate value from evaluation grid and index
-                optvalue = lopt + stepopt * it.multi_index[isim]
-                # print(self.steppar['unique_name'], '  ', simvalue, '\n')
-            else:
-                # gpcam mode, use position suggested by gpcam
-                optvalue = position[isim]
-
-            optpars[row.name] = optvalue
-
-        return optpars, itlabel
 
 
 
