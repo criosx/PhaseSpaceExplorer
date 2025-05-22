@@ -10,8 +10,8 @@ from scipy.special import erf
 from threading import Event
 from uuid import uuid4
 
-from .manager import MANAGER_ADDRESS, ManagerInterface
-from ..gp import Gp
+from pse.manager import MANAGER_ADDRESS, ManagerInterface
+from pse.gp import Gp
 from gpcam import GPOptimizer
 
 from lh_manager.liquid_handler.bedlayout import Composition
@@ -34,7 +34,8 @@ def acq_variance_target(x: np.ndarray, gpoptimizer: GPOptimizer):
 
     #print(x, x.shape)
     #print(gpoptimizer.posterior_covariance(x, variance_only=True)['v(x)'], gpoptimizer.posterior_mean(x)['f(x)'])
-    retval = np.array(gpoptimizer.posterior_covariance(x, variance_only=True)['v(x)']) / (np.array(gpoptimizer.posterior_mean(x)['f(x)']) + 25) ** 2
+    tolerance = 3
+    retval = np.array(gpoptimizer.posterior_covariance(x, variance_only=True)['v(x)']) / ((np.array(gpoptimizer.posterior_mean(x)['f(x)']) + 25) ** 2 + tolerance ** 2)
     #print(retval)
     return retval
 
@@ -401,8 +402,8 @@ def collect_wateripa(manager: ManagerInterface, ipa_fraction: float, sample_name
 
 class ROADMAP_Gp(Gp):
 
-    def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50, gpcam_init_dataset_size=1, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam', parallel_measurements=1, resume=False, show_support_points=True, project_name='', stop_event: Event = Event()):
-        super().__init__(exp_par, storage_path, acq_func, gpcam_iterations, gpcam_init_dataset_size, gpcam_step, keep_plots, miniter, optimizer, parallel_measurements, resume, show_support_points, project_name, stop_event)
+    def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50, gpcam_init_dataset_size=4, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam', parallel_measurements=1, resume=False, show_support_points=True, gp_discrete_points=None):
+        super().__init__(exp_par, storage_path, acq_func, gpcam_iterations, gpcam_init_dataset_size, gpcam_step, keep_plots, miniter, optimizer, parallel_measurements, resume, show_support_points, gp_discrete_points)
 
         """
             Parameters are fractions of the *volume* of the stock solutions of the optimized lipids. In other words, a parameter set of {'DOPC': 0.1, 'DOPE': 0.2}
@@ -446,8 +447,44 @@ class ROADMAP_Gp(Gp):
         self.units = 'mg/mL'
         self.lipids = {name: self._find_stock(name) for name in optimized_lipids}
         #pprint(self.lipids)
+        self._filter_discrete_points()
 
-        self.stop_event = stop_event
+    def _filter_discrete_points(self):
+
+        init_time = time.time()
+        pts = np.array(self.gp_discrete_points, dtype=float)
+        print(pts.shape)
+
+        lipid_idxs = []
+        for lipid, stock in self.lipids.items():
+            lipid_idxs.append(self.all_par.index[self.all_par['name'] == lipid].tolist()[0])
+
+        print(lipid_idxs)
+
+        source_matrix = np.diag(list(self.lipids.values()))
+        print(source_matrix, source_matrix.shape)
+
+        target_vectors = np.take_along_axis(pts, np.array([lipid_idxs]), axis=1)
+        print(target_vectors, target_vectors.shape)
+
+        sol = np.linalg.solve(source_matrix, target_vectors.T).T
+        print(sol, sol.shape)
+        print(f'Elapsed time: {time.time() - init_time}')
+
+        # efficient filtering of results
+        # sum of elements has to be less than 1
+        mask_sum = np.sum(sol, axis=1) <= 1.0
+
+        # no elements can be less than zero
+        mask_zero = ~np.sum(sol < 0.0, axis=1, dtype=bool)
+
+        filtered_sol = sol[mask_zero & mask_sum]
+        print(f'Elapsed time: {time.time() - init_time}')
+        print(filtered_sol.shape)
+
+        pts = pts[mask_zero & mask_sum]
+
+        self.gp_discrete_points = [pts[i] for i in range(pts.shape[0])]
 
     def _update_layout(self):
 
@@ -490,14 +527,15 @@ class ROADMAP_Gp(Gp):
         with open(storage_path, 'w') as f:
             json.dump(current_results, f)
 
-    def do_measurement_test(self, optpars, it_label):
+    def do_measurement(self, optpars, it_label, entry, q):
         
+        print(f'Starting measurement {it_label}')
         lipid_dict = {}
-        frac_remaining = 1.0
+        #frac_remaining = 1.0
         for compound, stock_conc in self.lipids.items():
             frac = optpars.get(compound, 0.0)
-            lipid_dict[compound] = frac * frac_remaining * stock_conc
-            frac_remaining *= (1.0 - frac)
+            lipid_dict[compound] = frac * stock_conc
+            #frac_remaining *= (1.0 - frac)
 
         total_concentration = sum(f for f in lipid_dict.values())
 
@@ -506,7 +544,17 @@ class ROADMAP_Gp(Gp):
                         1.0 * (1 + erf((lipid_dict.get('POPG', 0.0) - 1.5) / np.sqrt(2 * 0.3 ** 2))))
         variance = np.sqrt(np.abs(result))
 
+        print(f'{it_label} Sleeping...')
+
         time.sleep(2)
+
+        print(f'{it_label} Waking...')
+
+        # THESE THREE LINES NEED DO BE PRESENT IN EVERY DERIVED METHOD
+        # TODO: Make this post-logic seemless and still working with multiprocessing.Process
+        entry['value'] = result
+        entry['variance'] = variance
+        q.put(entry)        
 
         return result, variance            
 
@@ -516,7 +564,7 @@ class ROADMAP_Gp(Gp):
 
         return super().gpcam_instrument(data)
 
-    def do_measurement(self, optpars: dict, it_label: str):
+    def do_measurement_old(self, optpars: dict, it_label: str, entry: dict, q):
 
         # determine channel number
         channel = int(it_label) % self.n_channels
@@ -598,6 +646,12 @@ class ROADMAP_Gp(Gp):
 
         self.save_result(it_label, parameters, raw_result=res, control_id=self.current_control[channel], reduced_result=dict(results=results,
                                                                                 variance=variance))
+
+        # THESE THREE LINES NEED DO BE PRESENT IN EVERY DERIVED METHOD
+        # TODO: Make this post-logic seemless and still working with multiprocessing.Process
+        entry['value'] = results
+        entry['variance'] = variance
+        q.put(entry)        
 
         return results, variance
 

@@ -5,7 +5,9 @@ import concurrent.futures
 import json
 import math
 import matplotlib.pyplot as plt
-from multiprocessing import Process, Queue
+#from multiprocessing import Process, Queue
+from threading import Thread
+from queue import Queue
 import numpy as np
 import os.path
 import pickle
@@ -235,7 +237,6 @@ class Gp:
         self.prediction_gpcam = np.zeros(self.steplist)
         self.prediction_var_gpcam = np.zeros(self.steplist)
 
-    @staticmethod
     def do_measurement(optpars, it_label, entry, q):
         """
         This function performs the actual measurement and needs to be implemented in each subclass. Here, a test
@@ -263,13 +264,13 @@ class Gp:
     def gpcam_init_ae(self):
         parlimits = self.exp_par[['lower_opt', 'upper_opt']].to_numpy()
         numpars = len(parlimits)
-        hyperpars = np.ones([numpars + 2])
+        hyperpars = np.ones([numpars + 1])
         # the zeroth hyper bound is associated with a signal variance for the kernel
         # the others with the length scales of the parameter inputs
-        self.hyper_bounds = np.array([[0.001, 100]] * (numpars + 2))
+        self.hyper_bounds = np.array([[0.01, 100]] * (numpars + 1))
         for i in range(len(parlimits)):
             delta = parlimits[i][1] - parlimits[i][0]
-            self.hyper_bounds[i + 1] = [delta * 1e-3, delta * 1e1]
+            self.hyper_bounds[i + 1] = [delta * 1e-2, delta * 1e1]
 
         self.my_ae = GPOptimizer(
             init_hyperparameters=hyperpars,
@@ -696,7 +697,7 @@ class Gp:
             q = self.measurement_results_queue
             entry = {'parameter names': self.exp_par['name'].to_list(), 'position': current_task_data[1],
                      'value': None, 'variance': None}
-            p = Process(
+            p = Thread(
                 target=self.do_measurement,
                 args=(optpars, itlabel, entry, q)
             )
