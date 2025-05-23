@@ -262,15 +262,16 @@ class Gp:
         return result, variance
 
     def gpcam_init_ae(self):
-        parlimits = self.exp_par[['lower_opt', 'upper_opt']].to_numpy()
+        parlimits = self.exp_par[['lower_opt', 'upper_opt', 'step_opt']].to_numpy()
         numpars = len(parlimits)
         hyperpars = np.ones([numpars + 1])
         # the zeroth hyper bound is associated with a signal variance for the kernel
         # the others with the length scales of the parameter inputs
         self.hyper_bounds = np.array([[0.01, 100]] * (numpars + 1))
+        self.hyper_bounds[0] = np.array([0.001, 1e5])
         for i in range(len(parlimits)):
             delta = parlimits[i][1] - parlimits[i][0]
-            self.hyper_bounds[i + 1] = [delta * 1e-2, delta * 1e1]
+            self.hyper_bounds[i + 1] = [parlimits[i][2] * 0.5, delta * 1e1]
 
         self.my_ae = GPOptimizer(
             init_hyperparameters=hyperpars,
@@ -319,7 +320,9 @@ class Gp:
             progress = float(len(self.gpCAMstream)) / float(self.gpcam_iterations)
             self.task_dict['progress'] = '{:.2f}%'.format(progress * 100)
             if gpcam_initialized:
-                self.my_ae.update_hyperparameters(opt_obj)
+                #self.my_ae.update_hyperparameters(opt_obj)
+                self.gpcam_train(method='global')
+                self.gpcam_train(method='local')
                 self.gpcam_prediction()
                 self.gpcam_plot()
             return
@@ -347,7 +350,8 @@ class Gp:
 
         print("Continue to gpCAM measurments...")
 
-        opt_obj = self.gpcam_train_async()
+        #opt_obj = self.gpcam_train_async()
+        self.gpcam_train(method='global')
         self.gpcam_prediction()
         self.gpcam_plot()
 
@@ -393,7 +397,7 @@ class Gp:
                 # nothing to do
                 time.sleep(5)
 
-        self.my_ae.kill_client(opt_obj)
+        #self.my_ae.kill_training(opt_obj)
 
     def gpcam_plot(self):
         path1 = path.join(self.spath, 'plots')
@@ -426,7 +430,7 @@ class Gp:
 
         mesh = np.meshgrid(*self.axes, indexing='ij')
         stacked = np.stack(mesh, axis=-1)
-        prediction_positions = stacked.reshape(-1, len(self.axes))
+        prediction_positions = np.array(stacked.reshape(-1, len(self.axes)), dtype=np.float32)
 
         mean = self.my_ae.posterior_mean(prediction_positions)["f(x)"]
         var = self.my_ae.posterior_covariance(prediction_positions, variance_only=True, add_noise=False)["v(x)"]
@@ -440,11 +444,12 @@ class Gp:
             max_iter=10000
         )
 
-    def gpcam_train_async(self,):
+    def gpcam_train_async(self):
         opt_obj = self.my_ae.train_async(
             hyperparameter_bounds=self.hyper_bounds,
             max_iter=10000
         )
+        #self.my_ae.update_hyperparameters(opt_obj)
         return opt_obj
 
     def gridsearch_iterate_over_all_indices(self, refinement=False):
