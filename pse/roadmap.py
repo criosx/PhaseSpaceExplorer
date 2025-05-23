@@ -539,9 +539,9 @@ class ROADMAP_Gp(Gp):
 
         total_concentration = sum(f for f in lipid_dict.values())
 
-        result = -25 * (0.5 * (1 + erf((total_concentration - 0.6) / np.sqrt(2 * 0.3 ** 2))) + \
-                        1.5 * (1 + erf((lipid_dict.get('DOPE', 0.0) - 1.0) / np.sqrt(2 * 0.3 ** 2))) + \
-                        1.0 * (1 + erf((lipid_dict.get('POPG', 0.0) - 1.5) / np.sqrt(2 * 0.3 ** 2))))
+        result = -25 * (0.5 * (1 + erf((lipid_dict.get('DOPC', 0.0) - 0.5) / np.sqrt(2 * 0.3 ** 2))) + \
+                        lipid_dict.get('DOPE', 0.0) + \
+                        0.25 * (1 + erf((lipid_dict.get('POPG', 0.0) - 0.5) / np.sqrt(2 * 0.3 ** 2))))
         variance = np.sqrt(np.abs(result))
 
         print(f'{it_label} Sleeping...')
