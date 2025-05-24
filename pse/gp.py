@@ -132,7 +132,8 @@ def save_plot_2d(x, y, z, xlabel, ylabel, color, filename='plot', zmin=None, zma
 class Gp:
     def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50,
                  gpcam_init_dataset_size=20, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam',
-                 parallel_measurements=1, resume=False, show_support_points=True, gp_discrete_points=None):
+                 parallel_measurements=1, resume=False, signal_estimate=10, show_support_points=True,
+                 train_global_every=None, gp_discrete_points=None):
         """
         Initialize the GP class.
         :param exp_par: (Pandas dataframe or json or dict) Exploration parameter dataframe with rows: "name", "type",
@@ -142,6 +143,7 @@ class Gp:
                                    defines the grid of possible measurement points. If gp_discrete points is provided,
                                    there still needs to be an exp_par dataframe for plotting and naming.
         :param resume: (bool, default False) loads previous results from the storage path.
+        :param signal_estimate: (float) estimated max signal (max - min) for gp hyperparameter setting
         """
         self.acq_func = acq_func
         self.gpcam_iterations = gpcam_iterations
@@ -156,9 +158,15 @@ class Gp:
         if self.optimizer == 'gpCAM':
             self.optimizer = 'gpcam'
         self.parallel_measurements = parallel_measurements
+        self.signal_estimate = signal_estimate
         self.show_support_points = show_support_points
         # status dict of the type {"status": "running", "progress": "0%", "cancelled": False}
         self.task_dict = {}
+        if train_global_every is not None:
+            self.train_global_every = train_global_every
+        else:
+            self.train_global_every = self.parallel_measurements
+
 
         self.my_ae = None
 
@@ -295,16 +303,28 @@ class Gp:
         return result, variance
 
     def gpcam_init_ae(self):
+        # Compute Input Ranges
         parlimits = self.exp_par[['lower_opt', 'upper_opt', 'step_opt']].to_numpy()
-        numpars = len(parlimits)
-        hyperpars = np.ones([numpars + 1])
-        # the zeroth hyper bound is associated with a signal variance for the kernel
-        # the others with the length scales of the parameter inputs
-        self.hyper_bounds = np.array([[0.01, 100]] * (numpars + 1))
-        self.hyper_bounds[0] = np.array([0.001, 1e5])
-        for i in range(len(parlimits)):
-            delta = parlimits[i][1] - parlimits[i][0]
-            self.hyper_bounds[i + 1] = [parlimits[i][2] * 0.5, delta * 1e1]
+        ranges = [p[1] - p[0] for p in parlimits]
+
+        # Adjust Length Scales
+        #     A good starting point for each length scale is ~20–30% of the input range
+        #     A good bound is typically [1% to 100%][1% to 100%] of the input range
+        length_scale_init = [0.2 * r for r in ranges]
+        length_scale_bounds = [(0.01 * r, r) for r in ranges]
+
+        # Amplitude (signal variance) and Noise
+        # These don’t depend on the input range but on the output scale of your function. If you have rough estimates
+        # of the function's values:
+        #     Use amplitude_init ≈ std(f(x))
+        #     Use noise_init ≈ measurement error variance (or small, if deterministic)
+        amplitude_init = 0.1 * self.signal_estimate
+        amplitude_bounds = (1e-2, self.signal_estimate)
+        noise_init = 1e-6
+        noise_bounds = (1e-8, 1e-2)
+
+        hyperpars = np.array([amplitude_init] + length_scale_init)
+        self.hyper_bounds = np.array([amplitude_bounds] + length_scale_bounds)
 
         self.my_ae = GPOptimizer(
             init_hyperparameters=hyperpars,
@@ -353,14 +373,15 @@ class Gp:
             progress = float(len(self.gpCAMstream)) / float(self.gpcam_iterations)
             self.task_dict['progress'] = '{:.2f}%'.format(progress * 100)
             if gpcam_initialized:
-                #self.my_ae.update_hyperparameters(opt_obj)
-                self.gpcam_train(method='global')
-                self.gpcam_train(method='local')
+                if len(self.gpCAMstream) % self.train_global_every == 0:
+                    self.gpcam_train(method='global')
+                else:
+                    self.gpcam_train(method='local')
                 self.gpcam_prediction()
                 self.gpcam_plot()
             return
 
-        # Using the gpCAM global optimizer, follows the example from the gpCAM website
+        # Using the gpCAM global optimizer
         self.gpcam_init_ae()
 
         # save and evaluate initial data set if it has been freshly calculate
@@ -383,7 +404,6 @@ class Gp:
 
         print("Continue to gpCAM measurments...")
 
-        #opt_obj = self.gpcam_train_async()
         self.gpcam_train(method='global')
         self.gpcam_prediction()
         self.gpcam_plot()
@@ -429,8 +449,6 @@ class Gp:
                     self.iterations_inprogress_delete_file()
                 # nothing to do
                 time.sleep(5)
-
-        #self.my_ae.kill_training(opt_obj)
 
     def gpcam_plot(self):
         path1 = path.join(self.spath, 'plots')
