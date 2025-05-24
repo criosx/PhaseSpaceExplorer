@@ -302,37 +302,38 @@ class Gp:
 
         return result, variance
 
-    def gpcam_init_ae(self):
-        # Compute Input Ranges
-        parlimits = self.exp_par[['lower_opt', 'upper_opt', 'step_opt']].to_numpy()
-        ranges = [p[1] - p[0] for p in parlimits]
+    def gpcam_init_ae(self, just_gpcamstream=False):
+        if not just_gpcamstream:
+            # Compute Input Ranges
+            parlimits = self.exp_par[['lower_opt', 'upper_opt', 'step_opt']].to_numpy()
+            ranges = [p[1] - p[0] for p in parlimits]
 
-        # Adjust Length Scales
-        #     A good starting point for each length scale is ~20–30% of the input range
-        #     A good bound is typically [1% to 100%][1% to 100%] of the input range
-        length_scale_init = [0.2 * r for r in ranges]
-        length_scale_bounds = [(0.01 * r, r) for r in ranges]
+            # Adjust Length Scales
+            #     A good starting point for each length scale is ~20–30% of the input range
+            #     A good bound is typically [1% to 100%][1% to 100%] of the input range
+            length_scale_init = [0.2 * r for r in ranges]
+            length_scale_bounds = [(0.01 * r, r) for r in ranges]
 
-        # Amplitude (signal variance) and Noise
-        # These don’t depend on the input range but on the output scale of your function. If you have rough estimates
-        # of the function's values:
-        #     Use amplitude_init ≈ std(f(x))
-        #     Use noise_init ≈ measurement error variance (or small, if deterministic)
-        amplitude_init = 0.1 * self.signal_estimate
-        amplitude_bounds = (1e-2, self.signal_estimate)
-        noise_init = 1e-6
-        noise_bounds = (1e-8, 1e-2)
+            # Amplitude (signal variance) and Noise
+            # These don’t depend on the input range but on the output scale of your function. If you have rough estimates
+            # of the function's values:
+            #     Use amplitude_init ≈ std(f(x))
+            #     Use noise_init ≈ measurement error variance (or small, if deterministic)
+            amplitude_init = 0.1 * self.signal_estimate
+            amplitude_bounds = (1e-2, self.signal_estimate)
+            noise_init = 1e-6
+            noise_bounds = (1e-8, 1e-2)
 
-        hyperpars = np.array([amplitude_init] + length_scale_init)
-        self.hyper_bounds = np.array([amplitude_bounds] + length_scale_bounds)
+            hyperpars = np.array([amplitude_init] + length_scale_init)
+            self.hyper_bounds = np.array([amplitude_bounds] + length_scale_bounds)
 
-        self.my_ae = GPOptimizer(
-            init_hyperparameters=hyperpars,
-            gp2Scale=False,
-            calc_inv=False,
-            ram_economy=False,
-            args=None
-        )
+            self.my_ae = GPOptimizer(
+                init_hyperparameters=hyperpars,
+                gp2Scale=False,
+                calc_inv=False,
+                ram_economy=False,
+                args=None
+            )
 
         # those are Pandas dataframe colunns
         x = self.gpCAMstream['position'].to_numpy()
@@ -365,8 +366,8 @@ class Gp:
             print('Colected measurement results x, y, v: {}, {}, {}'.format(x, y, v))
             print('\n')
             # This is replacing the point that was previously preset with predicted value
-            self.my_ae.tell(x, y, v, append=True)
             self.gpCAMstream.loc[len(self.gpCAMstream)] = result
+            self.gpcam_init_ae(just_gpcamstream=True)
             self.results_io()
             # remove the current task from the in-progress list
             self.measurement_inprogress = [item for item in self.measurement_inprogress
@@ -427,18 +428,6 @@ class Gp:
                 n = self.parallel_measurements - len(self.measurement_inprogress)
                 n_max = self.parallel_measurements
 
-                # get the next measurement point based on the discrete input grid, always ask for n_max
-                # predictions as the highest prediction might already be in progress
-                '''
-                next_points = self.my_ae.ask(
-                    self.gp_discrete_points,
-                    n=n_max,
-                    method='global',
-                    acquisition_function=self.acq_func,
-                    info=True,
-                )
-                '''
-
                 submit_counter = 0
                 for i in range(n_max):
                     next_points = self.my_ae.ask(
@@ -448,19 +437,12 @@ class Gp:
                         acquisition_function=self.acq_func,
                         info=True,
                     )
-                    # check if measurment point is already in progress
-                    # filter_list = [item for item in self.measurement_inprogress
-                    #               if np.array_equal(item[1], next_points['x'][i])]
-                    #if not filter_list:
                     self.work_on_iteration(next_points['x'][0], self.gpiteration)
                     self.gpiteration += 1
                     submit_counter += 1
                     # immediately block this point by updating the gp with the theoretical result
                     # will be later replaced
                     next_point = np.array(next_points['x'][0])
-                    # print('Next point')
-                    # print(next_points['x'][0])
-                    # print(next_points['x'][0].shape())
                     pred_points = next_point.reshape(1, -1)
                     pred_mean = self.my_ae.posterior_mean(pred_points)["f(x)"]
                     pred_var = np.array([self.signal_estimate * 1e-7])
