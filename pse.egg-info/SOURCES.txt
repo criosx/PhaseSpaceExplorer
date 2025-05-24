@@ -1,8 +1,0 @@
-setup.py
-pse/app_functions.py
-pse/gp.py
-pse/gp_server.py
-pse.egg-info/PKG-INFO
-pse.egg-info/SOURCES.txt
-pse.egg-info/dependency_links.txt
-pse.egg-info/top_level.txt

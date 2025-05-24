@@ -1,15 +1,14 @@
 from contextlib import closing
 from flask import Flask
 from flask import abort, request
-#from multiprocessing import Process, Manager
 from threading import Thread
 import os
 import socket
 import sys
 
-
-from pse import gp
-from pse import roadmap
+# TODO: Make this import selection dependent on a gp_server startup parameter
+from pse.gp import Gp as gpobject
+# from pse.roadmap import ROADMAP_Gp as gpobject
 
 app = Flask(__name__)
 gpo = None
@@ -53,12 +52,6 @@ def start_server(storage_dir):
     with open(fp, "w") as f:
         f.write(str(port))
     print(f"Starting Phase Space Explorer Flask server on port {port}")
-
-    #manager = Manager()
-    # shared dict between server and subprocesses using the Manager funcitonality
-    #task_dict = manager.dict({"status": "idle", "progress": "0%", "cancelled": False})
-    measurement_inprogress = []
-
     app.run(port=port)
 
 
@@ -79,12 +72,10 @@ def start_pse():
     if data is None or not isinstance(data, dict):
         abort(400, description='No valid data received.')
 
-    gpo = roadmap.ROADMAP_Gp(**data)
+    gpo = gpobject(**data)
     task_dict["status"] = "running"
     task_dict["progress"] = "0%"
     task_dict["cancelled"] = False
-    # measurement_inprogress is only used for communicating between the child process and subprocesses it spawns
-    # however, I want to avoid a second instance of manager running
     p = Thread(target=gpo.run, args=(task_dict, ))
     p.start()
 

@@ -237,7 +237,7 @@ class Gp:
         self.prediction_gpcam = np.zeros(self.steplist)
         self.prediction_var_gpcam = np.zeros(self.steplist)
 
-    def do_measurement(optpars, it_label, entry, q):
+    def do_measurement(self, optpars, it_label, entry, q):
         """
         This function performs the actual measurement and needs to be implemented in each subclass. Here, a test
         function providing virtual data is provided
@@ -247,14 +247,47 @@ class Gp:
         :param q: (multiprocessing.Queue) the result queue
         :return: (result, variance) measurement result
         """
+
+        def ackley_nd(x, a=20, b=0.2, c=2 * np.pi):
+            """
+            Computes the n-dimensional Ackley function as a test for gp.
+            :param x: np.ndarray
+                      A 1D array of shape (n,) representing a single point in n-dimensional space,
+                      or a 2D array of shape (m, n) representing m points in n-dimensional space.
+            :param a, b, c: float
+                            Standard Ackley function parameters.
+            :return: float or np.ndarray
+                     The Ackley function value(s) at the input point(s).
+            """
+            x = np.atleast_2d(x)
+            n = x.shape[1]
+
+            # Compute sum of squares and sum of cosines
+            sum_sq_term = np.sum(x ** 2, axis=1)
+            cos_term = np.sum(np.cos(c * x), axis=1)
+
+            # Compute Ackley function
+            term1 = -a * np.exp(-b * np.sqrt(sum_sq_term / n))
+            term2 = -np.exp(cos_term / n)
+            result = term1 + term2 + a + np.e
+
+            # Return scalar if input was 1D
+            return result[0] if result.shape[0] == 1 else result
+
         result = 0
-        for par in optpars:
-            result += optpars[par] * 2 * np.pi
-        variance = np.abs(result * 0.025) + 1e-7
+        testpars = []
+        for i, par in enumerate(optpars):
+            ackley_par = (optpars[par] - self.axes[i][0])
+            ackley_par /= (self.axes[i][-1] - self.axes[i][0])
+            testpars.append(ackley_par)
+        result = float(ackley_nd(np.array(testpars)))
+        variance = 0.1
+        # add noise term
+        result += np.random.normal(loc=0.0, scale=np.sqrt(variance))
         time.sleep(1)
 
         # THESE THREE LINES NEED DO BE PRESENT IN EVERY DERIVED METHOD
-        # TODO: Make this post-logic seemless and still working with multiprocessing.Process
+        # TODO: Make this post-logic seemless for inheritance
         entry['value'] = result
         entry['variance'] = variance
         q.put(entry)
@@ -542,7 +575,7 @@ class Gp:
         with open(path.join(self.spath, 'results', 'current_iterations.pkl'), 'wb') as file:
             pickle.dump(output_df, file)
 
-    def run(self, task_dict, print_queue=None):
+    def run(self, task_dict):
         self.task_dict = task_dict
         self.task_dict['status'] = 'running'
 
