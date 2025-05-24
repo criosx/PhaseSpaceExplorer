@@ -364,6 +364,7 @@ class Gp:
             v = np.array([result['variance']])
             print('Colected measurement results x, y, v: {}, {}, {}'.format(x, y, v))
             print('\n')
+            # This is replacing the point that was previously preset with predicted value
             self.my_ae.tell(x, y, v, append=True)
             self.gpCAMstream.loc[len(self.gpCAMstream)] = result
             self.results_io()
@@ -374,6 +375,9 @@ class Gp:
             self.task_dict['progress'] = '{:.2f}%'.format(progress * 100)
             if gpcam_initialized:
                 if len(self.gpCAMstream) % self.train_global_every == 0:
+                    # reinitialize gp from gpCAM stream in case double-measured points were
+                    # eliminated due to the blocking scheme with prediction data
+                    self.gpcam_init_ae()
                     self.gpcam_train(method='global')
                 else:
                     self.gpcam_train(method='local')
@@ -425,21 +429,43 @@ class Gp:
 
                 # get the next measurement point based on the discrete input grid, always ask for n_max
                 # predictions as the highest prediction might already be in progress
+                '''
                 next_points = self.my_ae.ask(
                     self.gp_discrete_points,
                     n=n_max,
+                    method='global',
                     acquisition_function=self.acq_func,
                     info=True,
                 )
+                '''
+
                 submit_counter = 0
                 for i in range(n_max):
+                    next_points = self.my_ae.ask(
+                        self.gp_discrete_points,
+                        n=1,
+                        method='global',
+                        acquisition_function=self.acq_func,
+                        info=True,
+                    )
                     # check if measurment point is already in progress
-                    filter_list = [item for item in self.measurement_inprogress
-                                   if np.array_equal(item[1], next_points['x'][i])]
-                    if not filter_list:
-                        self.work_on_iteration(next_points['x'][i], self.gpiteration)
-                        self.gpiteration += 1
-                        submit_counter += 1
+                    # filter_list = [item for item in self.measurement_inprogress
+                    #               if np.array_equal(item[1], next_points['x'][i])]
+                    #if not filter_list:
+                    self.work_on_iteration(next_points['x'][0], self.gpiteration)
+                    self.gpiteration += 1
+                    submit_counter += 1
+                    # immediately block this point by updating the gp with the theoretical result
+                    # will be later replaced
+                    next_point = np.array(next_points['x'][0])
+                    # print('Next point')
+                    # print(next_points['x'][0])
+                    # print(next_points['x'][0].shape())
+                    pred_points = next_point.reshape(1, -1)
+                    pred_mean = self.my_ae.posterior_mean(pred_points)["f(x)"]
+                    pred_var = np.array([self.signal_estimate * 1e-7])
+                    self.my_ae.tell(pred_points, pred_mean, pred_var, append=True)
+                    self.gpcam_train(method='local')
                     if submit_counter == n:
                         break
 
