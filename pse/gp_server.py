@@ -1,6 +1,7 @@
 from contextlib import closing
 from flask import Flask
 from flask import abort, request
+# from multiprocessing import Process, Manager
 from threading import Thread
 import os
 import socket
@@ -82,9 +83,13 @@ def start_pse():
         from pse.roadmap import ROADMAP_Gp as gpobject
 
     gpo = gpobject(**data)
+    # manager = Manager()
+    # task_dict = manager.dict()
     task_dict["status"] = "running"
     task_dict["progress"] = "0%"
     task_dict["cancelled"] = False
+    # gp client needs to be a process, otherwise the server will stop responding during computation intensive
+    # tasks in the client.
     p = Thread(target=gpo.run, args=(task_dict, ))
     p.start()
 

@@ -1,7 +1,5 @@
-from gpcam.autonomous_experimenter import AutonomousExperimenterGP
 from gpcam import GPOptimizer
 from os import path, mkdir
-import concurrent.futures
 import json
 import math
 import matplotlib.pyplot as plt
@@ -382,7 +380,7 @@ class Gp:
                     # reinitialize gp from gpCAM stream in case double-measured points were
                     # eliminated due to the blocking scheme with prediction data
                     self.gpcam_init_ae()
-                    self.gpcam_train(method='global')
+                    self.gpcam_train(method='mcmc')
                 else:
                     self.gpcam_train(method='local')
                 self.gpcam_prediction()
@@ -411,17 +409,16 @@ class Gp:
                 time.sleep(5)
 
         printed = False
-        while len(self.measurement_inprogress) == self.gpiteration and not self.task_dict.get("cancelled", False):
+        while len(self.measurement_inprogress) == self.gpcam_init_dataset_size and not self.task_dict.get("cancelled", False):
             if not printed:
-                print('Waiting for at least one initial measurement to finish.')
+                print('Waiting for at least one measurement to finish.')
                 printed = True
             if not self.measurement_results_queue.empty():
                 collect_measurement(gpcam_initialized=False)
             else:
                 time.sleep(5)
 
-        print("Continue to gpCAM measurments...")
-
+        print("Continue to gpCAM measurements...")
         self.gpcam_train(method='global')
         self.gpcam_prediction()
         self.gpcam_plot()
@@ -505,8 +502,13 @@ class Gp:
         prediction_positions = np.array(stacked.reshape(-1, len(self.axes)), dtype=np.float32)
 
         mean = self.my_ae.posterior_mean(prediction_positions)["f(x)"]
-        var = self.my_ae.posterior_covariance(prediction_positions, variance_only=True, add_noise=False)["v(x)"]
         self.prediction_gpcam = mean.reshape(self.steplist)
+
+        # TODO: Variance becomes expensive to calculate above 2 dimensions. Need to investigate. If currently
+        #   too many points used, it will freeze up all threads, including the gp server. This also means we should
+        #   probably return to using Processes instead of threads.
+
+        var = self.my_ae.posterior_covariance(prediction_positions, variance_only=True, add_noise=False)["v(x)"]
         self.prediction_var_gpcam = var.reshape(self.steplist)
 
     def gpcam_train(self, method='mcmc'):
