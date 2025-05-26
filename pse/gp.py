@@ -315,17 +315,17 @@ class Gp:
             #     A good starting point for each length scale is ~20–30% of the input range
             #     A good bound is typically [1% to 100%][1% to 100%] of the input range
             length_scale_init = [0.2 * r for r in ranges]
-            length_scale_bounds = [(0.01 * r, r) for r in ranges]
+            length_scale_bounds = [(0.01 * r, r*100) for r in ranges]
 
             # Amplitude (signal variance) and Noise
-            # These don’t depend on the input range but on the output scale of your function. If you have rough estimates
-            # of the function's values:
+            # These don’t depend on the input range but on the output scale of your function.
+            # If you have rough estimates of the function's values:
             #     Use amplitude_init ≈ std(f(x))
             #     Use noise_init ≈ measurement error variance (or small, if deterministic)
             amplitude_init = 0.1 * self.signal_estimate
             amplitude_bounds = (1e-2, self.signal_estimate)
-            noise_init = 1e-6
-            noise_bounds = (1e-8, 1e-2)
+            # noise_init = 1e-6
+            # noise_bounds = (1e-8, 1e-2)
 
             hyperpars = np.array([amplitude_init] + length_scale_init)
             self.hyper_bounds = np.array([amplitude_bounds] + length_scale_bounds)
