@@ -289,7 +289,7 @@ class Gp:
             ackley_par /= (self.axes[i][-1] - self.axes[i][0])
             testpars.append(ackley_par)
         result = float(ackley_nd(np.array(testpars)))
-        variance = 0.1
+        variance = 0.001
         # add noise term
         result += np.random.normal(loc=0.0, scale=np.sqrt(variance))
         time.sleep(1)

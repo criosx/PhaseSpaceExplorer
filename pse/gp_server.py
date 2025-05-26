@@ -6,13 +6,10 @@ import os
 import socket
 import sys
 
-# TODO: Make this import selection dependent on a gp_server startup parameter
-from pse.gp import Gp as gpobject
-# from pse.roadmap import ROADMAP_Gp as gpobject
-
 app = Flask(__name__)
 gpo = None
 port = None
+p = None
 task_dict = {}
 
 
@@ -42,7 +39,6 @@ def start_server(storage_dir):
     global app
     global port
     global task_dict
-    global measurement_inprogress
 
     print(f"Using storage directory: {storage_dir} for gp.")
 
@@ -64,6 +60,7 @@ def start_pse():
     """
     global gpo
     global task_dict
+    global p
 
     if request.method != 'POST':
         abort(400, description='Request method is not POST.')
@@ -71,6 +68,18 @@ def start_pse():
     data = request.get_json()
     if data is None or not isinstance(data, dict):
         abort(400, description='No valid data received.')
+
+    if p is not None:
+        abort(400, description='Another gp instance is already running.')
+
+    if 'client' in data:
+        if data['client'] == 'ROADMAP':
+            from pse.roadmap import ROADMAP_Gp as gpobject
+        elif data['client'] == 'Test Ackley Function':
+            from pse.gp import Gp as gpobject
+        del data['client']
+    else:
+        from pse.roadmap import ROADMAP_Gp as gpobject
 
     gpo = gpobject(**data)
     task_dict["status"] = "running"
@@ -85,9 +94,16 @@ def start_pse():
 @app.route('/stop_pse', methods=['GET'])
 def stop_pse():
     global task_dict
+    global p
+    global gpo
+
     if task_dict:
         task_dict["cancelled"] = True
-    return "Stopping of PSE tasks initialized"
+    if p is not None:
+        p.join()
+        gpo = None
+
+    return "PSE stopped"
 
 
 if __name__ == "__main__":
