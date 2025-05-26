@@ -293,7 +293,7 @@ class Gp:
         variance = 0.001
         # add noise term
         result += np.random.normal(loc=0.0, scale=np.sqrt(variance))
-        time.sleep(1)
+        time.sleep(10)
 
         # THESE THREE LINES NEED DO BE PRESENT IN EVERY DERIVED METHOD
         # TODO: Make this post-logic seemless for inheritance
@@ -380,7 +380,7 @@ class Gp:
                     # reinitialize gp from gpCAM stream in case double-measured points were
                     # eliminated due to the blocking scheme with prediction data
                     self.gpcam_init_ae()
-                    self.gpcam_train(method='mcmc')
+                    self.gpcam_train(method='global')
                 else:
                     self.gpcam_train(method='local')
                 self.gpcam_prediction()
@@ -447,6 +447,10 @@ class Gp:
                         acquisition_function=self.acq_func,
                         info=True,
                     )
+
+                    # print('For testing purposes print all suggested points. Only first one is used.')
+                    # print('Suggested acquisition points: {}'.format(next_points['x']))
+
                     self.work_on_iteration(next_points['x'][0], self.gpiteration)
                     self.gpiteration += 1
                     submit_counter += 1
