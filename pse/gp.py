@@ -235,12 +235,15 @@ class Gp:
                 self.gp_discrete_points = [self.gp_discrete_points[i] for i in range(self.gp_discrete_points.shape[0])]
             self.hyper_bounds = None
 
+            if resume:
+                try:
+                    self.results_io(load=True)
+                except FileNotFoundError:
+                    resume = False
             if not resume:
                 columns = ['parameter names', 'position', 'value', 'variance']
                 self.gpCAMstream = pd.DataFrame(columns=columns)
                 self.gpiteration = 0
-            else:
-                self.results_io(load=True)
 
         self.prediction_gpcam = np.zeros(self.steplist)
         self.prediction_var_gpcam = np.zeros(self.steplist)
@@ -405,6 +408,16 @@ class Gp:
                 self.gpiteration += 1
             else:
                 # nothing to do
+                time.sleep(5)
+
+        printed = False
+        while len(self.measurement_inprogress) == self.gpiteration and not self.task_dict.get("cancelled", False):
+            if not printed:
+                print('Waiting for at least one initial measurement to finish.')
+                printed = True
+            if not self.measurement_results_queue.empty():
+                collect_measurement(gpcam_initialized=False)
+            else:
                 time.sleep(5)
 
         print("Continue to gpCAM measurments...")
