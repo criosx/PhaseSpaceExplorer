@@ -293,7 +293,7 @@ class Gp:
         variance = 0.001
         # add noise term
         result += np.random.normal(loc=0.0, scale=np.sqrt(variance))
-        time.sleep(10)
+        time.sleep(1)
 
         # THESE THREE LINES NEED DO BE PRESENT IN EVERY DERIVED METHOD
         # TODO: Make this post-logic seemless for inheritance
@@ -442,7 +442,7 @@ class Gp:
                 for i in range(n_max):
                     next_points = self.my_ae.ask(
                         self.gp_discrete_points,
-                        n=1,
+                        n=n_max,
                         method='global',
                         acquisition_function=self.acq_func,
                         info=True,
