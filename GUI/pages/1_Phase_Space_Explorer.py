@@ -181,7 +181,6 @@ def monitor():
                 png_files.append(full_path)
 
     for file in png_files:
-        st.info(png_files)
         try:
             st.image(file, use_container_width=True)
         except FileNotFoundError:
