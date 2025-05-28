@@ -402,8 +402,8 @@ def collect_wateripa(manager: ManagerInterface, ipa_fraction: float, sample_name
 
 class ROADMAP_Gp(Gp):
 
-    def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50, gpcam_init_dataset_size=4, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam', parallel_measurements=1, resume=False, show_support_points=True, gp_discrete_points=None):
-        super().__init__(exp_par, storage_path, acq_func, gpcam_iterations, gpcam_init_dataset_size, gpcam_step, keep_plots, miniter, optimizer, parallel_measurements, resume, show_support_points, gp_discrete_points)
+    def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50, gpcam_init_dataset_size=4, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam', parallel_measurements=1, resume=False, signal_estimate=10, show_support_points=True, train_global_every=None, gp_discrete_points=None):
+        super().__init__(exp_par, storage_path, acq_func, gpcam_iterations, gpcam_init_dataset_size, gpcam_step, keep_plots, miniter, optimizer, parallel_measurements, resume, signal_estimate, show_support_points, train_global_every, gp_discrete_points)
 
         """
             Parameters are fractions of the *volume* of the stock solutions of the optimized lipids. In other words, a parameter set of {'DOPC': 0.1, 'DOPE': 0.2}
@@ -539,7 +539,7 @@ class ROADMAP_Gp(Gp):
 
         total_concentration = sum(f for f in lipid_dict.values())
 
-        result = -25 * (0.5 * (1 + erf((lipid_dict.get('DOPC', 0.0) - 0.5) / np.sqrt(2 * 0.3 ** 2))) + \
+        result = -25 * (0.5 * (1 + erf((lipid_dict.get('DOPC', 0.0) - 0.5) / np.sqrt(2 * 0.6 ** 2))) + \
                         lipid_dict.get('DOPE', 0.0) + \
                         0.25 * (1 + erf((lipid_dict.get('POPG', 0.0) - 0.5) / np.sqrt(2 * 0.3 ** 2))))
         variance = np.sqrt(np.abs(result))
