@@ -545,6 +545,7 @@ class Gp:
             method=method,
             max_iter=10000
         )
+        self.my_ae.set_hyperparameters(np.around(self.my_ae.hyperparameters, 7))
 
     def gpcam_train_async(self):
         opt_obj = self.my_ae.train_async(
