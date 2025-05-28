@@ -159,13 +159,14 @@ class Gp:
         self.parallel_measurements = parallel_measurements
         self.signal_estimate = signal_estimate
         self.show_support_points = show_support_points
+
         # status dict of the type {"status": "running", "progress": "0%", "cancelled": False}
         self.task_dict = {}
         if train_global_every is not None:
             self.train_global_every = train_global_every
         else:
             self.train_global_every = self.parallel_measurements
-
+        self.skipped_global_training = False
 
         self.my_ae = None
 
@@ -294,7 +295,8 @@ class Gp:
         variance = 0.001
         # add noise term
         result += np.random.normal(loc=0.0, scale=np.sqrt(variance))
-        time.sleep(1)
+        sleeptime = np.random.random() * 30
+        time.sleep(sleeptime)
 
         # THESE THREE LINES NEED DO BE PRESENT IN EVERY DERIVED METHOD
         # TODO: Make this post-logic seemless for inheritance
@@ -322,7 +324,7 @@ class Gp:
             #     Use amplitude_init ≈ std(f(x))
             #     Use noise_init ≈ measurement error variance (or small, if deterministic)
             amplitude_init = 0.1 * self.signal_estimate
-            amplitude_bounds = (1e-2, self.signal_estimate)
+            amplitude_bounds = (1e-2, self.signal_estimate * 10)
             # noise_init = 1e-6
             # noise_bounds = (1e-8, 1e-2)
 
@@ -376,12 +378,29 @@ class Gp:
                                            if not np.array_equal(item[1], result['position'])]
             progress = float(len(self.gpCAMstream)) / float(self.gpcam_iterations)
             self.task_dict['progress'] = '{:.2f}%'.format(progress * 100)
+
             if gpcam_initialized:
-                if len(self.gpCAMstream) % self.train_global_every == 0:
-                    # reinitialize gp from gpCAM stream in case double-measured points were
-                    # eliminated due to the blocking scheme with prediction data
-                    self.gpcam_init_ae()
+                # Do not train if more points will be added from the main loop
+                if not self.measurement_results_queue.empty():
+                    if len(self.gpCAMstream) % self.train_global_every == 0:
+                        self.skipped_global_training = True
+                    return
+
+                # retell the gpCAM optimizer the measuremnts in progress
+                if self.measurement_inprogress:
+                    meas_points = []
+                    for point in self.measurement_inprogress:
+                        meas_points.append(point[1])
+                    meas_points = np.array(meas_points)
+                    pred_mean = self.my_ae.posterior_mean(meas_points)["f(x)"]
+                    # pred_var = self.my_ae.posterior_covariance(pred_points, variance_only=True)["v(x)"]
+                    pred_var = np.array([self.signal_estimate * 1e-7] * meas_points.shape[0])
+                    self.my_ae.tell(meas_points, pred_mean, pred_var, append=True)
+
+                # train
+                if len(self.gpCAMstream) % self.train_global_every == 0 or self.skipped_global_training:
                     self.gpcam_train(method='global')
+                    self.skipped_global_training = False
                 else:
                     self.gpcam_train(method='local')
                 self.gpcam_prediction()
@@ -394,7 +413,6 @@ class Gp:
         # save and evaluate initial data set if it has been freshly calculate
         print('Checking if sufficient initial measurements.')
         while self.gpiteration < self.gpcam_init_dataset_size and not self.task_dict.get("cancelled", False):
-
             if not self.measurement_results_queue.empty():
                 collect_measurement(gpcam_initialized=False)
             elif len(self.measurement_inprogress) < self.parallel_measurements:
@@ -422,7 +440,7 @@ class Gp:
         print("Continue to gpCAM measurements...")
         self.gpcam_train(method='global')
         self.gpcam_prediction()
-        self.gpcam_plot()
+        # self.gpcam_plot()
 
         while len(self.my_ae.x_data) < self.gpcam_iterations and not self.task_dict.get("cancelled", False):
             # print('gpCAM main loop with abortion signal {}'.format(self.task_dict.get("cancelled", False)))
@@ -449,9 +467,6 @@ class Gp:
                         info=True,
                     )
 
-                    # print('For testing purposes print all suggested points. Only first one is used.')
-                    # print('Suggested acquisition points: {}'.format(next_points['x']))
-
                     self.work_on_iteration(next_points['x'][0], self.gpiteration)
                     self.gpiteration += 1
                     submit_counter += 1
@@ -460,7 +475,7 @@ class Gp:
                     next_point = np.array(next_points['x'][0])
                     pred_points = next_point.reshape(1, -1)
                     pred_mean = self.my_ae.posterior_mean(pred_points)["f(x)"]
-                    #pred_var = self.my_ae.posterior_covariance(pred_points, variance_only=True)["v(x)"]
+                    # pred_var = self.my_ae.posterior_covariance(pred_points, variance_only=True)["v(x)"]
                     pred_var = np.array([self.signal_estimate * 1e-7])
                     self.my_ae.tell(pred_points, pred_mean, pred_var, append=True)
                     self.gpcam_train(method='local')
@@ -491,8 +506,8 @@ class Gp:
         mesh = np.meshgrid(*self.axes, indexing='ij')
         stacked = np.stack(mesh, axis=-1)
         plot_positions = np.array(stacked.reshape(-1, len(self.axes)), dtype=np.float32)
-        #print(np.array(self.gp_discrete_points).shape, plot_positions.shape, self.prediction_gpcam.shape, interp(plot_positions).shape)
-        #print(self.steplist, interp(plot_positions).reshape(self.steplist))
+        # print(np.array(self.gp_discrete_points).shape, plot_positions.shape, self.prediction_gpcam.shape, interp(plot_positions).shape)
+        # print(self.steplist, interp(plot_positions).reshape(self.steplist))
 
         self.results_plot(interp(plot_positions).reshape(self.steplist),
                           filename=path.join(path1, 'prediction_gpcam'), mark_maximum=True,
@@ -505,25 +520,24 @@ class Gp:
         :return: no return value
         """
 
-        # TODO: This creates all input positions of the range defined by the axes and stepsizes, if there is a non-
-        #   Eucledian input space for the gpOptimizer provided, this is ignored here. The idea is that non-Eucledian
-        #   plotting is a nightmare in this module. However, some filtering against the non-Euclidean input might be
-        #   desirable.
+        # Only use discrete points for prediction and plotting.
+        # TODO: In case we want to allow defining the parameter space by boundaries, use the the commented out code
+        #   instead.
 
-        #mesh = np.meshgrid(*self.axes, indexing='ij')
-        #stacked = np.stack(mesh, axis=-1)
-        #prediction_positions = np.array(stacked.reshape(-1, len(self.axes)), dtype=np.float32)
+        # mesh = np.meshgrid(*self.axes, indexing='ij')
+        # stacked = np.stack(mesh, axis=-1)
+        # prediction_positions = np.array(stacked.reshape(-1, len(self.axes)), dtype=np.float32)
         prediction_positions = np.array(self.gp_discrete_points, dtype=np.float32)
 
         self.prediction_gpcam = self.my_ae.posterior_mean(prediction_positions)["f(x)"]
-        #self.prediction_gpcam = mean.reshape(self.steplist)
+        # self.prediction_gpcam = mean.reshape(self.steplist)
 
         # TODO: Variance becomes expensive to calculate above 2 dimensions. Need to investigate. If currently
         #   too many points used, it will freeze up all threads, including the gp server. This also means we should
         #   probably return to using Processes instead of threads.
 
         self.prediction_var_gpcam = self.my_ae.posterior_covariance(prediction_positions, variance_only=True, add_noise=False)["v(x)"]
-        #self.prediction_var_gpcam = var.reshape(self.steplist)
+        # self.prediction_var_gpcam = var.reshape(self.steplist)
 
     def gpcam_train(self, method='mcmc'):
         self.my_ae.train(

@@ -345,7 +345,7 @@ gp_iter = 50
 init_iter = 10
 if opt_optimizer == 'gpcam':
     gp_iter = col_opt_3.number_input('GP iterations', min_value=20, value=1000, format='%i', step=100)
-    init_iter = col_opt_3.number_input('Initialization iterations', min_value=1, value=10, format='%i', step=1)
+    init_iter = col_opt_3.number_input('Initial Measurments', min_value=1, value=10, format='%i', step=1)
     opt_acq = col_opt_3.selectbox("GP acquisition function", ['variance', 'ucb', 'lcb', 'maximum', 'minimum',
                                                               'gradient', 'total correlation', 'expected improvement',
                                                               'probability of improvement',
