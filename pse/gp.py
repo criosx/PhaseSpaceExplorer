@@ -323,8 +323,8 @@ class Gp:
             # If you have rough estimates of the function's values:
             #     Use amplitude_init ≈ std(f(x))
             #     Use noise_init ≈ measurement error variance (or small, if deterministic)
-            amplitude_init = 0.1 * self.signal_estimate
-            amplitude_bounds = (1e-2, self.signal_estimate * 10)
+            amplitude_init = 0.1 * self.signal_estimate ** 2
+            amplitude_bounds = (1e-2, self.signal_estimate ** 2)
             # noise_init = 1e-6
             # noise_bounds = (1e-8, 1e-2)
 
