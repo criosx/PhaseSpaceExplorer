@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from threading import Thread
 from queue import Queue
 import numpy as np
+from scipy.interpolate import LinearNDInterpolator
 import os.path
 import pickle
 import pandas as pd
@@ -53,9 +54,9 @@ def save_plot_1d(x, y, dy=None, xlabel='', ylabel='', color='blue', filename="pl
     import matplotlib
 
     if ymin is None:
-        ymin = np.amin(y)
+        ymin = np.nanmin(y)
     if ymax is None:
-        ymax = np.amax(y)
+        ymax = np.nanmax(y)
 
     font = {'family': 'sans-serif', 'weight': '200', 'size': 14}
     matplotlib.rc('font', **font)
@@ -91,9 +92,9 @@ def save_plot_2d(x, y, z, xlabel, ylabel, color, filename='plot', zmin=None, zma
     import matplotlib
 
     if zmin is None:
-        zmin = np.amin(z)
+        zmin = np.nanmin(z)
     if zmax is None:
-        zmax = np.amax(z)
+        zmax = np.nanmax(z)
 
     bounds = nice_interval(start=zmin, stop=zmax, numsteps=levels)
 
@@ -459,6 +460,7 @@ class Gp:
                     next_point = np.array(next_points['x'][0])
                     pred_points = next_point.reshape(1, -1)
                     pred_mean = self.my_ae.posterior_mean(pred_points)["f(x)"]
+                    #pred_var = self.my_ae.posterior_covariance(pred_points, variance_only=True)["v(x)"]
                     pred_var = np.array([self.signal_estimate * 1e-7])
                     self.my_ae.tell(pred_points, pred_mean, pred_var, append=True)
                     self.gpcam_train(method='local')
@@ -485,7 +487,14 @@ class Gp:
         else:
             support_points = None
 
-        self.results_plot(self.prediction_gpcam,
+        interp = LinearNDInterpolator(self.gp_discrete_points, self.prediction_gpcam)
+        mesh = np.meshgrid(*self.axes, indexing='ij')
+        stacked = np.stack(mesh, axis=-1)
+        plot_positions = np.array(stacked.reshape(-1, len(self.axes)), dtype=np.float32)
+        #print(np.array(self.gp_discrete_points).shape, plot_positions.shape, self.prediction_gpcam.shape, interp(plot_positions).shape)
+        #print(self.steplist, interp(plot_positions).reshape(self.steplist))
+
+        self.results_plot(interp(plot_positions).reshape(self.steplist),
                           filename=path.join(path1, 'prediction_gpcam'), mark_maximum=True,
                           support_points=support_points)
 
@@ -501,19 +510,20 @@ class Gp:
         #   plotting is a nightmare in this module. However, some filtering against the non-Euclidean input might be
         #   desirable.
 
-        mesh = np.meshgrid(*self.axes, indexing='ij')
-        stacked = np.stack(mesh, axis=-1)
-        prediction_positions = np.array(stacked.reshape(-1, len(self.axes)), dtype=np.float32)
+        #mesh = np.meshgrid(*self.axes, indexing='ij')
+        #stacked = np.stack(mesh, axis=-1)
+        #prediction_positions = np.array(stacked.reshape(-1, len(self.axes)), dtype=np.float32)
+        prediction_positions = np.array(self.gp_discrete_points, dtype=np.float32)
 
-        mean = self.my_ae.posterior_mean(prediction_positions)["f(x)"]
-        self.prediction_gpcam = mean.reshape(self.steplist)
+        self.prediction_gpcam = self.my_ae.posterior_mean(prediction_positions)["f(x)"]
+        #self.prediction_gpcam = mean.reshape(self.steplist)
 
         # TODO: Variance becomes expensive to calculate above 2 dimensions. Need to investigate. If currently
         #   too many points used, it will freeze up all threads, including the gp server. This also means we should
         #   probably return to using Processes instead of threads.
 
-        var = self.my_ae.posterior_covariance(prediction_positions, variance_only=True, add_noise=False)["v(x)"]
-        self.prediction_var_gpcam = var.reshape(self.steplist)
+        self.prediction_var_gpcam = self.my_ae.posterior_covariance(prediction_positions, variance_only=True, add_noise=False)["v(x)"]
+        #self.prediction_var_gpcam = var.reshape(self.steplist)
 
     def gpcam_train(self, method='mcmc'):
         self.my_ae.train(
@@ -747,7 +757,7 @@ class Gp:
                     projection = np.empty((self.steplist[i], self.steplist[j]))
                     for k in range(self.steplist[i]):
                         for ll in range(self.steplist[j]):
-                            projection[k, ll] = np.take(np.take(arr_value, indices=k, axis=i), indices=ll, axis=j).max()
+                            projection[k, ll] = np.nanmax(np.take(np.take(arr_value, indices=k, axis=i), indices=ll, axis=j))
                     save_plot_2d(ax1, ax2, projection, xlabel=sp1, ylabel=sp2, color=ec,
                                  filename=path.join(path1, filename+'_'+sp1+'_'+sp2), zmin=valmin, zmax=valmax,
                                  levels=levels, mark_maximum=mark_maximum, keep_plots=self.keep_plots)
