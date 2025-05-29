@@ -542,7 +542,9 @@ class ROADMAP_Gp(Gp):
         result = -25 * (0.5 * (1 + erf((lipid_dict.get('DOPC', 0.0) - 0.5) / np.sqrt(2 * 0.6 ** 2))) + \
                         lipid_dict.get('DOPE', 0.0) + \
                         0.25 * (1 + erf((lipid_dict.get('POPG', 0.0) - 0.5) / np.sqrt(2 * 0.3 ** 2))))
-        variance = np.sqrt(np.abs(result))
+        #variance = np.abs(result)
+        variance = 10.0
+        result += np.sqrt(variance) * np.random.randn()
 
         print(f'{it_label} Sleeping...')
 
