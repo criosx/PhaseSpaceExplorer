@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from threading import Thread
 from queue import Queue
 import numpy as np
-from scipy.interpolate import LinearNDInterpolator
+from scipy.interpolate import LinearNDInterpolator, interp1d
 import os.path
 import pickle
 import pandas as pd
@@ -49,7 +49,7 @@ def nice_interval(start=0, stop=1, step=None, numsteps=10):
 
 
 def save_plot_1d(x, y, dy=None, xlabel='', ylabel='', color='blue', filename="plot", ymin=None, ymax=None, levels=5,
-                 niceticks=False, keep_plots=False):
+                 niceticks=False, keep_plots=False, support_points=None):
     import matplotlib.pyplot as plt
     import matplotlib
 
@@ -69,6 +69,10 @@ def save_plot_1d(x, y, dy=None, xlabel='', ylabel='', color='blue', filename="pl
     if niceticks:
         bounds = nice_interval(start=ymin, stop=ymax, numsteps=levels)
         ax.set_yticks(bounds)
+    if support_points is not None:
+        print(support_points, support_points.shape)
+        ax.errorbar(support_points[:, 0], support_points[:, 1], support_points[:,2] ** 0.5, fmt='o', alpha=0.7, markersize=8, capsize=6, c='k')
+
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.ticklabel_format(scilimits=(-3, 3), useMathText=True)
@@ -499,15 +503,19 @@ class Gp:
             support_points = self.gpCAMstream['position'].to_numpy()
             if support_points.dtype == object:
                 support_points = np.stack(support_points)
+                vv = self.gpCAMstream[['value', 'variance']].to_numpy()
+                support_points = np.concatenate((support_points, self.gpCAMstream[['value', 'variance']].to_numpy()), axis=-1)
         else:
             support_points = None
 
-        interp = LinearNDInterpolator(self.gp_discrete_points, self.prediction_gpcam)
+        if len(self.axes) > 1:
+            interp = LinearNDInterpolator(self.gp_discrete_points, self.prediction_gpcam)
+        else:
+            interp = interp1d(np.array(self.gp_discrete_points).squeeze(), self.prediction_gpcam, fill_value=np.nan, bounds_error=False, kind='linear')
+
         mesh = np.meshgrid(*self.axes, indexing='ij')
         stacked = np.stack(mesh, axis=-1)
         plot_positions = np.array(stacked.reshape(-1, len(self.axes)), dtype=np.float32)
-        # print(np.array(self.gp_discrete_points).shape, plot_positions.shape, self.prediction_gpcam.shape, interp(plot_positions).shape)
-        # print(self.steplist, interp(plot_positions).reshape(self.steplist))
 
         self.results_plot(interp(plot_positions).reshape(self.steplist),
                           filename=path.join(path1, 'prediction_gpcam'), mark_maximum=True,
@@ -739,7 +747,8 @@ class Gp:
             else:
                 dy = None
             save_plot_1d(ax0, arr_value, dy=dy, xlabel=sp0, ylabel=vallabel, filename=path.join(path1, filename),
-                         ymin=valmin, ymax=valmax, levels=levels, niceticks=niceticks, keep_plots=self.keep_plots)
+                         ymin=valmin, ymax=valmax, levels=levels, niceticks=niceticks, keep_plots=self.keep_plots,
+                         support_points=support_points)
 
         elif len(arr_value.shape) == 2:
             # numpy array and plot axes are reversed
