@@ -85,6 +85,7 @@ def collect_data_sleep(manager: ManagerInterface,
 
 def collect_data(manager: ManagerInterface,
                  bilayer_composition: Composition,
+                 exchange_flow_rate: float,
                  sample_name: str,
                  description: str,
                  channel: int = 0,
@@ -92,9 +93,6 @@ def collect_data(manager: ManagerInterface,
                  stop_event: Event = Event()) -> tuple[float, float]:
     """Performs a bilayer formation measurement with a lipid composition and total lipid concentration.
     
-        TODO: for now, assumes a single channel = 0, but in the future could implement a channel selector
-                based on the inputs (substrate) or a rolling counter
-
     Args:
         lipids (dict[str, float]): dictionary with lipid name as the key and concentration of that lipid as the value
         concentration (float): total lipid concentration in mg/mL
@@ -183,7 +181,7 @@ def collect_data(manager: ManagerInterface,
                                             Extra_Volume=0.1,
                                             Rinse_Volume=2.0,
                                             Flow_Rate=2.0,
-                                            Exchange_Flow_Rate=0.1,
+                                            Exchange_Flow_Rate=max(exchange_flow_rate, 0.1),
                                             Equilibration_Time=5.0,
                                             Measurement_Time=3.0)
     
@@ -402,8 +400,8 @@ def collect_wateripa(manager: ManagerInterface, ipa_fraction: float, sample_name
 
 class ROADMAP_Gp(Gp):
 
-    def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50, gpcam_init_dataset_size=4, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam', parallel_measurements=1, resume=False, signal_estimate=10, show_support_points=True, train_global_every=None, gp_discrete_points=None):
-        super().__init__(exp_par, storage_path, acq_func, gpcam_iterations, gpcam_init_dataset_size, gpcam_step, keep_plots, miniter, optimizer, parallel_measurements, resume, signal_estimate, show_support_points, train_global_every, gp_discrete_points)
+    def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50, gpcam_init_dataset_size=4, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam', parallel_measurements=1, resume=False, signal_estimate=10, show_support_points=True, train_global_every=None, gp_discrete_points=None, project_name=None):
+        super().__init__(exp_par, storage_path, acq_func, gpcam_iterations, gpcam_init_dataset_size, gpcam_step, keep_plots, miniter, optimizer, parallel_measurements, resume, signal_estimate, show_support_points, train_global_every, gp_discrete_points, project_name)
 
         """
             Parameters are fractions of the *volume* of the stock solutions of the optimized lipids. In other words, a parameter set of {'DOPC': 0.1, 'DOPE': 0.2}
@@ -418,7 +416,7 @@ class ROADMAP_Gp(Gp):
         self.acq_func = acq_variance_target
 
         # set number of channels
-        self.n_channels = 1
+        self.n_channels = 2
 
         # set target value for acquisition function
         self.target_value = -25
@@ -527,7 +525,7 @@ class ROADMAP_Gp(Gp):
         with open(storage_path, 'w') as f:
             json.dump(current_results, f)
 
-    def do_measurement(self, optpars, it_label, entry, q):
+    def do_measurement_test(self, optpars, it_label, entry, q):
         
         print(f'Starting measurement {it_label}')
         lipid_dict = {}
@@ -566,19 +564,14 @@ class ROADMAP_Gp(Gp):
 
         return super().gpcam_instrument(data)
 
-    def do_measurement_old(self, optpars: dict, it_label: str, entry: dict, q):
+    def do_measurement(self, optpars: dict, it_label: str, entry: dict, q):
 
         # determine channel number
         channel = int(it_label) % self.n_channels
 
         # Configure a particular problem with a set of N lipids. Then there are N-1 keywords describing the composition, plus 1 for the total concentration.
         # Calculate the composition we expect from optpars.
-        lipid_dict = {}
-        frac_remaining = 1.0
-        for compound, stock_conc in self.lipids.items():
-            frac = optpars.get(compound, 0.0)
-            lipid_dict[compound] = frac * frac_remaining * stock_conc
-            frac_remaining *= (1.0 - frac)
+        lipid_dict = {compound: optpars.get(compound, 0.0) for compound in self.lipids.keys()}
 
         total_concentration = sum(f for f in lipid_dict.values())
 
@@ -618,10 +611,10 @@ class ROADMAP_Gp(Gp):
         sample_name = f'{self.project_name} point {it_label}'
         description = datetime.datetime.now().strftime("%Y%m%d %H.%M.%S")
         if 'ipa_fraction' in optpars:
-            res: dict = collect_wateripa(self.manager, optpars['ipa_fraction'], sample_name, description, control=new_control, stop_event=self.stop_event)
+            res: dict = collect_wateripa(self.manager, optpars['ipa_fraction'], sample_name, description, control=new_control)
             harmonic_power = 0.5
         else:
-            res: dict = collect_data(self.manager, bilayer_composition, sample_name, description, channel=channel, control=new_control, stop_event=self.stop_event)
+            res: dict = collect_data(self.manager, bilayer_composition, optpars.get('flow_rate', 0.1), sample_name, description, channel=channel, control=new_control)
             harmonic_power = 1.0
 
         # replace current value of control if applicable
