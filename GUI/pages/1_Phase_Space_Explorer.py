@@ -255,7 +255,8 @@ def start_stop_optimization():
                       'gpcam_init_dataset_size': init_iter,
                       'gpcam_iterations': gp_iter,
                       'parallel_measurements': parallel_meas,
-                      'resume': True
+                      'resume': True,
+                      'project_name': st.session_state['active_project']
                       }
             success, port = app_functions.run_pse(**kwargs)
 

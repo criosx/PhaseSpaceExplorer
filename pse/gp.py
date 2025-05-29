@@ -136,7 +136,7 @@ class Gp:
     def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50,
                  gpcam_init_dataset_size=20, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam',
                  parallel_measurements=1, resume=True, signal_estimate=10, show_support_points=True,
-                 train_global_every=None, gp_discrete_points=None):
+                 train_global_every=None, gp_discrete_points=None, project_name=''):
         """
         Initialize the GP class.
         :param exp_par: (Pandas dataframe or json or dict) Exploration parameter dataframe with rows: "name", "type",
@@ -163,6 +163,7 @@ class Gp:
         self.parallel_measurements = parallel_measurements
         self.signal_estimate = signal_estimate
         self.show_support_points = show_support_points
+        self.project_name = project_name
 
         # status dict of the type {"status": "running", "progress": "0%", "cancelled": False}
         self.task_dict = {}
