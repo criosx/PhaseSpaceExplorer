@@ -34,7 +34,7 @@ def acq_variance_target(x: np.ndarray, gpoptimizer: GPOptimizer):
 
     #print(x, x.shape)
     #print(gpoptimizer.posterior_covariance(x, variance_only=True)['v(x)'], gpoptimizer.posterior_mean(x)['f(x)'])
-    tolerance = 3
+    tolerance = 5
     retval = np.array(gpoptimizer.posterior_covariance(x, variance_only=True)['v(x)']) / ((np.array(gpoptimizer.posterior_mean(x)['f(x)']) + 25) ** 2 + tolerance ** 2)
     #print(retval)
     return retval
@@ -401,6 +401,14 @@ def collect_wateripa(manager: ManagerInterface, ipa_fraction: float, sample_name
 class ROADMAP_Gp(Gp):
 
     def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50, gpcam_init_dataset_size=4, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam', parallel_measurements=1, resume=False, signal_estimate=10, show_support_points=True, train_global_every=None, gp_discrete_points=None, project_name=None):
+
+        # ensure that init dataset size is no smaller than number of parallel measurements
+        gpcam_init_dataset_size = max(gpcam_init_dataset_size, parallel_measurements)
+
+        # set number of channels
+        self.n_channels = parallel_measurements
+        self.channels = [{'busy': False, 'count': 0} for i in range(self.n_channels)]
+
         super().__init__(exp_par, storage_path, acq_func, gpcam_iterations, gpcam_init_dataset_size, gpcam_step, keep_plots, miniter, optimizer, parallel_measurements, resume, signal_estimate, show_support_points, train_global_every, gp_discrete_points, project_name)
 
         """
@@ -414,12 +422,6 @@ class ROADMAP_Gp(Gp):
 
         # set acquisition function
         self.acq_func = acq_variance_target
-
-        # set number of channels
-        self.n_channels = 2
-
-        # set target value for acquisition function
-        self.target_value = -25
 
         # control measurement
         self.controls: dict[str, dict] = self.load_controls()
@@ -567,7 +569,9 @@ class ROADMAP_Gp(Gp):
     def do_measurement(self, optpars: dict, it_label: str, entry: dict, q):
 
         # determine channel number
-        channel = int(it_label) % self.n_channels
+        channel = next(i for i, ch in enumerate(self.channels) if not ch['busy'])
+        self.channels[channel]['busy'] = True
+        #channel = int(it_label) % self.n_channels
 
         # Configure a particular problem with a set of N lipids. Then there are N-1 keywords describing the composition, plus 1 for the total concentration.
         # Calculate the composition we expect from optpars.
@@ -604,18 +608,19 @@ class ROADMAP_Gp(Gp):
             raise RuntimeError('Cannot make composition ' + repr(bilayer_formulation))
         
         # collect data, including control if necessary, and increment control counter
-        channel_counter = (int(it_label) - channel) // self.n_channels
+        channel_counter = self.channels[channel]['count']
         new_control = (((channel_counter % self.control_cycle) == 0) | (len(self.controls[str(channel)])==0))
         print(f'Iteration {it_label} in channel {channel} with channel-specific counter {channel_counter}')
         
         sample_name = f'{self.project_name} point {it_label}'
         description = datetime.datetime.now().strftime("%Y%m%d %H.%M.%S")
-        if 'ipa_fraction' in optpars:
-            res: dict = collect_wateripa(self.manager, optpars['ipa_fraction'], sample_name, description, control=new_control)
-            harmonic_power = 0.5
-        else:
-            res: dict = collect_data(self.manager, bilayer_composition, optpars.get('flow_rate', 0.1), sample_name, description, channel=channel, control=new_control)
-            harmonic_power = 1.0
+
+        # start new manager client in thread (can't use self.manager because not thread-safe)
+        manager = ManagerInterface(address=self.manager.address)
+        manager.initialize()
+
+        res: dict = collect_data(manager, bilayer_composition, optpars.get('flow_rate', 0.1), sample_name, description, channel=channel, control=new_control)
+        harmonic_power = 1.0
 
         # replace current value of control if applicable
         if new_control:
@@ -641,6 +646,9 @@ class ROADMAP_Gp(Gp):
 
         self.save_result(it_label, parameters, raw_result=res, control_id=self.current_control[channel], reduced_result=dict(results=results,
                                                                                 variance=variance))
+
+        self.channels[channel]['busy'] = False
+        self.channels[channel]['count'] += 1
 
         # THESE THREE LINES NEED DO BE PRESENT IN EVERY DERIVED METHOD
         # TODO: Make this post-logic seemless and still working with multiprocessing.Process
