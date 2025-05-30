@@ -58,7 +58,7 @@ class ManagerInterface:
         
     def update_sample(self, sample: Sample) -> tuple[str, Sample]:
 
-        response: dict[str, str] = requests.post(urljoin(self.address, '/GUI/UpdateSample'), data=sample.model_dump_json()).json()
+        response: dict[str, str] = requests.post(urljoin(self.address, '/GUI/UpdateSample/'), data=sample.model_dump_json()).json()
 
         # should return {'sample added': id} or {}'sample updated': id}
 
