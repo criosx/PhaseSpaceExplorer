@@ -445,8 +445,16 @@ class ROADMAP_Gp(Gp):
         #pprint(optimized_lipids)
         self._layout = self.manager.get_layout()
         self.units = 'mg/mL'
-        self.lipids = {name: self._find_stock(name) for name in optimized_lipids}
-        #pprint(self.lipids)
+
+        # protect against missing stock solutions
+        self.lipids = {}
+        for name in optimized_lipids:
+            stock_conc = self._find_stock(name)
+            if stock_conc is None:
+                print(f'WARNING: cannot find stock solution of {name}. Ignoring...')
+            else:
+                self.lipids.update({name: stock_conc})
+
         self._filter_discrete_points()
 
     def _filter_discrete_points(self):
@@ -495,7 +503,10 @@ class ROADMAP_Gp(Gp):
         # find wells that have only the compound as a stock solution
         well = next((w for w in self._layout.racks['Stock'].wells if [s.name for s in w.composition.solutes]==[compound]), None)
 
-        return well.composition.solutes[0].convert_units(self.units)
+        if well is not None:
+            return well.composition.solutes[0].convert_units(self.units)
+        else:
+            return None
 
     def load_controls(self) -> dict:
 
