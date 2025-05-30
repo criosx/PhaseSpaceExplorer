@@ -381,6 +381,8 @@ class Gp:
             # remove the current task from the in-progress list
             self.measurement_inprogress = [item for item in self.measurement_inprogress
                                            if not np.array_equal(item[1], result['position'])]
+            # add the number of already submitted iterations back
+            self.gpiteration += len(self.measurement_inprogress)
             progress = float(len(self.gpCAMstream)) / float(self.gpcam_iterations)
             self.task_dict['progress'] = '{:.2f}%'.format(progress * 100)
 
@@ -393,9 +395,7 @@ class Gp:
 
                 # retell the gpCAM optimizer the measuremnts in progress
                 if self.measurement_inprogress:
-                    meas_points = []
-                    for point in self.measurement_inprogress:
-                        meas_points.append(point[1])
+                    meas_points = [point[1] for point in self.measurement_inprogress]
                     meas_points = np.array(meas_points)
                     pred_mean = self.my_ae.posterior_mean(meas_points)["f(x)"]
                     # pred_var = self.my_ae.posterior_covariance(pred_points, variance_only=True)["v(x)"]
@@ -421,16 +421,26 @@ class Gp:
             if not self.measurement_results_queue.empty():
                 collect_measurement(gpcam_initialized=False)
             elif len(self.measurement_inprogress) < self.parallel_measurements:
-                print('Preparing initial measurement #{}.'.format(self.gpiteration))
+                print(f'Preparing initial measurement #{self.gpiteration}.')
                 if self.gpiteration == 0:
                     next_point = self.gp_discrete_points[0]
                 else:
-                    next_point = self.gp_discrete_points[int(np.random.random() * len(self.gp_discrete_points))]
+                    # Get in-progress measurement points and stream points
+                    meas_points = np.stack(
+                        [p[1] for p in self.measurement_inprogress]) if self.measurement_inprogress else None
+                    stream_array = self.gpCAMstream['position'].to_numpy()
+                    stream_points = np.stack(stream_array) if stream_array.shape[0] > 0 else None
+                    if meas_points is not None and stream_points is not None:
+                        used_points = np.vstack((meas_points, stream_points))
+                    else:
+                        used_points = meas_points if meas_points is not None else stream_points
+                    # Try up to 10 times to find an unused point
+                    for _ in range(10):
+                        next_point = self.gp_discrete_points[np.random.randint(len(self.gp_discrete_points))]
+                        if used_points is None or not np.any(np.all(used_points == next_point, axis=1)):
+                            break
                 self.work_on_iteration(next_point, self.gpiteration)
                 self.gpiteration += 1
-            else:
-                # nothing to do
-                time.sleep(5)
 
         printed = False
         while len(self.measurement_inprogress) == self.gpcam_init_dataset_size and not self.task_dict.get("cancelled", False):
