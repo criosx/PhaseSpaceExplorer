@@ -457,7 +457,8 @@ class Gp:
         self.gpcam_prediction()
         # self.gpcam_plot()
 
-        while len(self.my_ae.x_data) < self.gpcam_iterations and not self.task_dict.get("cancelled", False):
+        while (len(self.gpCAMstream['position'].to_numpy()) < self.gpcam_iterations
+               and not self.task_dict.get("cancelled", False)):
             # print('gpCAM main loop with abortion signal {}'.format(self.task_dict.get("cancelled", False)))
             # print("length of the dataset: ", len(self.my_ae.x_data))
 
@@ -465,7 +466,8 @@ class Gp:
             if not self.measurement_results_queue.empty():
                 collect_measurement(gpcam_initialized=True)
             # can we start another measurment?
-            elif len(self.measurement_inprogress) < self.parallel_measurements:
+            elif (self.gpiteration < self.gpcam_iterations and
+                  len(self.measurement_inprogress) < self.parallel_measurements):
                 # update hyperparameters
                 print('Hyperparamters:')
                 print(self.my_ae.get_hyperparameters())
