@@ -451,7 +451,8 @@ class ROADMAP_Gp(Gp):
         for name in optimized_lipids:
             stock_conc = self._find_stock(name)
             if stock_conc is None:
-                print(f'WARNING: cannot find stock solution of {name}. Ignoring...')
+                #print(f'WARNING: cannot find stock solution of {name}. Ignoring...')
+                raise RuntimeError('cannot find stock solution of {name}. Ignoring...')
             else:
                 self.lipids.update({name: stock_conc})
 
@@ -493,6 +494,9 @@ class ROADMAP_Gp(Gp):
         pts = pts[mask_zero & mask_sum]
 
         self.gp_discrete_points = [pts[i] for i in range(pts.shape[0])]
+
+        if len(self.gp_discrete_points) > 40000:
+            raise RuntimeError(f'Maximum length of filtered points is 40000, requested {len(self.gp_discrete_points)}')
 
     def _update_layout(self):
 
