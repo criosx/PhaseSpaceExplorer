@@ -20,13 +20,15 @@ from lh_manager.liquid_handler.roadmapmethods import (ROADMAP_QCMD_MakeBilayer,
                                                       ROADMAP_QCMD_RinseLoopInjectandMeasure,
                                                       ROADMAP_QCMD_RinseDirectInjectandMeasure,
                                                       ROADMAP_DirectInjecttoQCMD,
+                                                      ROADMAP_QCMD_LoopInjectandMeasure,
                                                       ROADMAP_QCMD_DirectInjectandMeasure,
                                                       QCMDRecordTag,
                                                       Formulation,
                                                       TransferWithRinse,
                                                       MixWithRinse,
                                                       InferredWellLocation,
-                                                      ROADMAP_DirectInjecttoQCMD)
+                                                      ROADMAP_DirectInjecttoQCMD,
+                                                      find_well_and_volume)
                                                       
 from lh_manager.liquid_handler.samplelist import Sample, MethodList
 
@@ -85,9 +87,10 @@ def collect_data_sleep(manager: ManagerInterface,
 
 def collect_data(manager: ManagerInterface,
                  bilayer_composition: Composition,
-                 exchange_flow_rate: float,
-                 sample_name: str,
-                 description: str,
+                 exchange_flow_rate: float = 0.1,
+                 salt_concentration: float = 0.15,
+                 sample_name: str = '',
+                 description: str = '',
                  channel: int = 0,
                  control: bool = True,
                  stop_event: Event = Event()) -> tuple[float, float]:
@@ -108,8 +111,10 @@ def collect_data(manager: ManagerInterface,
     isopropanol = Composition(solvents=[manager.solvent_from_material('isopropanol', fraction=1)], solutes=[])
 
     buffer_composition = Composition(solvents=[manager.solvent_from_material('H2O', fraction=1)],
-                                    solutes=[manager.solute_from_material('NaCl', concentration=0.15, units='M'),
-                                            manager.solute_from_material('tris', concentration=10.0, units='mM')])
+                                             solutes=[manager.solute_from_material('tris', concentration=10.0, units='mM')])
+    
+    if salt_concentration > 0:
+        buffer_composition.solutes.append(manager.solute_from_material('NaCl', concentration=salt_concentration, units='M'))
 
     # rinses
     ethanol_rinse = ROADMAP_QCMD_RinseLoopInjectandMeasure(Target_Composition=Composition(solvents=[manager.solvent_from_material('ethanol', fraction=1)], solutes=[]),
@@ -138,16 +143,40 @@ def collect_data(manager: ManagerInterface,
                                                       Use_Bubble_Sensors=True,
                                                       Equilibration_Time=2,
                                                       Measurement_Time=1)
-    
-    buffer_control = ROADMAP_QCMD_RinseLoopInjectandMeasure(id=str(uuid4()),
+
+    # generate buffer if necessary
+    required_buffer_volume = 0.2 + 2 * 1.6
+    mix_extra_volume = 0.1
+    layout = manager.get_layout()
+    buffer_mixing_well, error = find_well_and_volume(buffer_composition, required_buffer_volume, layout.get_all_wells())
+    buffer_formulation = None
+    buffer_control_methods = []
+    if buffer_mixing_well is None:
+        buffer_mixing_well = manager.reserve_empty_well()
+
+        buffer_formulation = Formulation(target_composition=buffer_composition,
+                                        target_volume=required_buffer_volume + mix_extra_volume,
+                                        Target=buffer_mixing_well,
+                                        exact_match=True,
+                                        transfer_template=TransferWithRinse(),
+                                        mix_template=MixWithRinse(Repeats=3,
+                                                                  Extra_Volume=mix_extra_volume))
+        
+        layout = manager.get_layout()
+        buffer_mixing_well.expected_composition = buffer_formulation.get_expected_composition(layout)
+        buffer_control_methods += buffer_formulation.get_methods(layout)
+
+    buffer_control = ROADMAP_QCMD_LoopInjectandMeasure(id=str(uuid4()),
                                                             Target_Composition=buffer_composition,
                                                       Volume=1.5,
-                                                      Injection_Flow_Rate=0.1,
+                                                      Injection_Flow_Rate=exchange_flow_rate,
                                                       Extra_Volume=0.1,
                                                       Is_Organic=False,
                                                       Use_Bubble_Sensors=True,
                                                       Equilibration_Time=5,
                                                       Measurement_Time=3)
+    
+    buffer_control_methods += buffer_control.get_methods_from_well(buffer_mixing_well, buffer_composition, layout)
                                                           
    
     second_water_rinse = ROADMAP_QCMD_RinseLoopInjectandMeasure(
@@ -191,9 +220,9 @@ def collect_data(manager: ManagerInterface,
         ethanol_rinse,
         ]
     if control:
+        methods += [isopropanol_rinse]
+        methods += buffer_control_methods
         methods += [
-            isopropanol_rinse,
-            buffer_control,
             second_water_rinse,
             second_ethanol_rinse,
         ]
@@ -220,7 +249,7 @@ def collect_data(manager: ManagerInterface,
 
     if control:
         print('Waiting for control measurement result...')
-        control_result = manager.wait_for_result(sample, buffer_control.id, stop_event)
+        control_result = manager.wait_for_result(sample, buffer_control_methods[-1].id, stop_event)
     else:
         control_result = None
 
@@ -421,7 +450,7 @@ class ROADMAP_Gp(Gp):
         """
 
         # set acquisition function
-        self.acq_func = acq_variance_target
+        #self.acq_func = acq_variance_target
 
         # control measurement
         self.controls: dict[str, dict] = self.load_controls()
@@ -582,7 +611,7 @@ class ROADMAP_Gp(Gp):
 
         return super().gpcam_instrument(data)
 
-    def do_measurement_old(self, optpars: dict, it_label: str, entry: dict, q):
+    def do_measurement(self, optpars: dict, it_label: str, entry: dict, q):
 
         # determine channel number
         channel = next(i for i, ch in enumerate(self.channels) if not ch['busy'])
@@ -637,7 +666,14 @@ class ROADMAP_Gp(Gp):
         manager = ManagerInterface(address=self.manager.address)
         manager.initialize()
 
-        res: dict = collect_data(manager, bilayer_composition, optpars.get('flow_rate', 0.1), sample_name, description, channel=channel, control=new_control)
+        res: dict = collect_data(manager,
+                                 bilayer_composition,
+                                 exchange_flow_rate=optpars.get('flow_rate', 0.1),
+                                 salt_concentration=optpars.get('salt_concentration', 0.15),
+                                 sample_name=sample_name,
+                                 description=description,
+                                 channel=channel,
+                                 control=new_control)
         harmonic_power = 1.0
 
         # replace current value of control if applicable

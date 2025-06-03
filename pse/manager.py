@@ -10,7 +10,7 @@ from threading import Event
 from urllib.parse import urljoin
 
 from lh_manager.material_db.db import Material
-from lh_manager.liquid_handler.bedlayout import LHBedLayout, Solvent, Solute
+from lh_manager.liquid_handler.bedlayout import LHBedLayout, Solvent, Solute, InferredWellLocation
 from lh_manager.liquid_handler.methods import BaseMethod
 from lh_manager.liquid_handler.samplelist import Sample
 
@@ -65,6 +65,18 @@ class ManagerInterface:
         self.get_samples()
 
         return list(response.values())[0], self.rehydrate_sample(sample.id)
+    
+    def reserve_empty_well(self) -> InferredWellLocation:
+        new_well = InferredWellLocation(rack_id='Mix')
+        layout = self.get_layout()
+        new_well = layout.infer_location(new_well)
+
+        well, rack = layout.get_well_and_rack(new_well.rack_id, new_well.well_number)
+        well.id = new_well.id
+        
+        response: dict[str, str] = requests.post(urljoin(self.address, '/GUI/UpdateWell/'), data=well.model_dump_json()).json()
+
+        return new_well
 
     def rehydrate_sample(self, sample_id: str) -> Sample:
 
