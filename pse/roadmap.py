@@ -83,11 +83,12 @@ def collect_data_sleep(manager: ManagerInterface,
     # parse and combine the results
     return {'control': {}, 'measure': {}}
 
-def collect_data(manager: ManagerInterface,
+def collect_data(manager_address: str,
                  bilayer_composition: Composition,
-                 exchange_flow_rate: float,
-                 sample_name: str,
-                 description: str,
+                 exchange_flow_rate: float = 0.1,
+                 salt_concentration: float = 0.15,
+                 sample_name: str = '',
+                 description: str = '',
                  channel: int = 0,
                  control: bool = True,
                  stop_event: Event = Event()) -> tuple[float, float]:
@@ -104,12 +105,18 @@ def collect_data(manager: ManagerInterface,
         tuple[float, float]: normalized change in QCMD frequency and error
     """
 
+    # start new manager client in thread (can't use self.manager because not thread-safe)
+    manager = ManagerInterface(address=manager_address)
+    manager.initialize()
+
     water = Composition(solvents=[manager.solvent_from_material('H2O', fraction=1)], solutes=[])
     isopropanol = Composition(solvents=[manager.solvent_from_material('isopropanol', fraction=1)], solutes=[])
 
     buffer_composition = Composition(solvents=[manager.solvent_from_material('H2O', fraction=1)],
-                                    solutes=[manager.solute_from_material('NaCl', concentration=0.15, units='M'),
-                                            manager.solute_from_material('tris', concentration=10.0, units='mM')])
+                                    solutes=[manager.solute_from_material('tris', concentration=10.0, units='mM')])
+    
+    if salt_concentration > 0:
+        buffer_composition.solutes.append(manager.solute_from_material('NaCl', concentration=salt_concentration, units='mM'))
 
     # rinses
     ethanol_rinse = ROADMAP_QCMD_RinseLoopInjectandMeasure(Target_Composition=Composition(solvents=[manager.solvent_from_material('ethanol', fraction=1)], solutes=[]),
@@ -142,7 +149,7 @@ def collect_data(manager: ManagerInterface,
     buffer_control = ROADMAP_QCMD_RinseLoopInjectandMeasure(id=str(uuid4()),
                                                             Target_Composition=buffer_composition,
                                                       Volume=1.5,
-                                                      Injection_Flow_Rate=0.1,
+                                                      Injection_Flow_Rate=exchange_flow_rate,
                                                       Extra_Volume=0.1,
                                                       Is_Organic=False,
                                                       Use_Bubble_Sensors=True,
@@ -576,13 +583,7 @@ class ROADMAP_Gp(Gp):
 
         return result, variance            
 
-    def gpcam_instrument(self, data):
-        if self.gpiteration == 0:
-            data[0]['x_data'] = np.zeros(len(self.lipids))
-
-        return super().gpcam_instrument(data)
-
-    def do_measurement_old(self, optpars: dict, it_label: str, entry: dict, q):
+    def do_measurement(self, optpars: dict, it_label: str, entry: dict, q):
 
         # determine channel number
         channel = next(i for i, ch in enumerate(self.channels) if not ch['busy'])
@@ -595,7 +596,7 @@ class ROADMAP_Gp(Gp):
 
         total_concentration = sum(f for f in lipid_dict.values())
 
-        print(f'Starting measurement {it_label} with total concentration {total_concentration} and lipid concentrations {lipid_dict}: ')
+        print(f'Starting measurement {it_label} with parameters {optpars}: total lipid concentration {total_concentration} with lipid concentrations {lipid_dict}')
 
         if False:
             result = -25 * (0.5 * (1 + erf((total_concentration - 0.6) / np.sqrt(2 * 0.3 ** 2))) + 0.5 * (1 + erf((lipid_dict['DOPE'] - 1.5) / np.sqrt(2 * 0.3 ** 2))))
@@ -625,6 +626,13 @@ class ROADMAP_Gp(Gp):
             else:
                 raise RuntimeError('Cannot make composition ' + repr(bilayer_formulation))
         
+        # deal with salt concentration
+        salt_concs = [0, 10, 30, 60, 100, 300, 600, 1000] # mM
+        salt_concentration = 150 # default
+        salt_index = optpars.get('salt_concentration', None)
+        if salt_index is not None:
+            salt_concentration = salt_concs[int(salt_index)]
+
         # collect data, including control if necessary, and increment control counter
         channel_counter = self.channels[channel]['count']
         new_control = (((channel_counter % self.control_cycle) == 0) | (len(self.controls[str(channel)])==0))
@@ -633,11 +641,14 @@ class ROADMAP_Gp(Gp):
         sample_name = f'{self.project_name} point {it_label}'
         description = datetime.datetime.now().strftime("%Y%m%d %H.%M.%S")
 
-        # start new manager client in thread (can't use self.manager because not thread-safe)
-        manager = ManagerInterface(address=self.manager.address)
-        manager.initialize()
-
-        res: dict = collect_data(manager, bilayer_composition, optpars.get('flow_rate', 0.1), sample_name, description, channel=channel, control=new_control)
+        res: dict = collect_data(self.manager.address,
+                                 bilayer_composition,
+                                 exchange_flow_rate=optpars.get('flow_rate', 1.0),
+                                 salt_concentration=salt_concentration,
+                                 sample_name=sample_name,
+                                 description=description,
+                                 channel=channel,
+                                 control=new_control)
         harmonic_power = 1.0
 
         # replace current value of control if applicable
