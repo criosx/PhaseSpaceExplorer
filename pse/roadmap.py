@@ -561,9 +561,10 @@ class ROADMAP_Gp(Gp):
         variance = 10.0
         result += np.sqrt(variance) * np.random.randn()
 
-        print(f'{it_label} Sleeping...')
+        sleep_time = 60 * np.random.random()
+        print(f'{it_label} Sleeping {sleep_time:0.0f} s...')
 
-        time.sleep(2)
+        time.sleep(sleep_time)
 
         print(f'{it_label} Waking...')
 
@@ -581,7 +582,7 @@ class ROADMAP_Gp(Gp):
 
         return super().gpcam_instrument(data)
 
-    def do_measurement(self, optpars: dict, it_label: str, entry: dict, q):
+    def do_measurement_old(self, optpars: dict, it_label: str, entry: dict, q):
 
         # determine channel number
         channel = next(i for i, ch in enumerate(self.channels) if not ch['busy'])
@@ -611,16 +612,18 @@ class ROADMAP_Gp(Gp):
         # in special case that there are no lipids, specify that we're just measuring the diluent
         if bilayer_composition.is_empty:
             bilayer_composition = diluent
-        
-        # attempt the formulation. If it fails, stop. Most likely is that one of the stocks on the bed ran out.
-        bilayer_formulation = SoluteFormulation(target_composition=bilayer_composition, target_volume=1.0, diluent=diluent)
-        _, _, success = bilayer_formulation.formulate(self._layout)
-
-        if success:
-            real_composition = bilayer_formulation.get_expected_composition(self._layout)
-            print('Real composition: ' + repr(real_composition))
+            real_composition = diluent
         else:
-            raise RuntimeError('Cannot make composition ' + repr(bilayer_formulation))
+        
+            # attempt the formulation. If it fails, stop. Most likely is that one of the stocks on the bed ran out.
+            bilayer_formulation = SoluteFormulation(target_composition=bilayer_composition, target_volume=1.0, diluent=diluent)
+            _, _, success = bilayer_formulation.formulate(self._layout)
+
+            if success:
+                real_composition = bilayer_formulation.get_expected_composition(self._layout)
+                print('Real composition: ' + repr(real_composition))
+            else:
+                raise RuntimeError('Cannot make composition ' + repr(bilayer_formulation))
         
         # collect data, including control if necessary, and increment control counter
         channel_counter = self.channels[channel]['count']
