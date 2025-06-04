@@ -561,12 +561,15 @@ class Gp:
         # self.prediction_var_gpcam = var.reshape(self.steplist)
 
     def gpcam_train(self, method='mcmc'):
+        # following line to avoid bounds errors
+        #print('Original hyperparameters: ', self.my_ae.hyperparameters)
+        self.my_ae.set_hyperparameters(np.clip(self.my_ae.hyperparameters, self.hyper_bounds[:,0], self.hyper_bounds[:,1]))
+        #print('New hyperparameters: ', self.my_ae.hyperparameters)
         self.my_ae.train(
             hyperparameter_bounds=self.hyper_bounds,
             method=method,
             max_iter=10000
         )
-        self.my_ae.set_hyperparameters(np.around(self.my_ae.hyperparameters, 7))
 
     def gpcam_train_async(self):
         opt_obj = self.my_ae.train_async(
