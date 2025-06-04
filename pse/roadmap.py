@@ -21,6 +21,7 @@ from lh_manager.liquid_handler.roadmapmethods import (ROADMAP_QCMD_MakeBilayer,
                                                       ROADMAP_QCMD_RinseDirectInjectandMeasure,
                                                       ROADMAP_DirectInjecttoQCMD,
                                                       ROADMAP_QCMD_DirectInjectandMeasure,
+                                                      ROADMAP_QCMD_LoopInjectandMeasure,
                                                       QCMDRecordTag,
                                                       Formulation,
                                                       TransferWithRinse,
@@ -117,6 +118,12 @@ def collect_data(manager_address: str,
     
     if salt_concentration > 0:
         buffer_composition.solutes.append(manager.solute_from_material('NaCl', concentration=salt_concentration, units='mM'))
+    
+    default_buffer_composition = Composition(solvents=[manager.solvent_from_material('H2O', fraction=1)],
+                                    solutes=[manager.solute_from_material('NaCl', concentration=150.0, units='mM'),
+                                             manager.solute_from_material('tris', concentration=10.0, units='mM')])
+
+    default_salt = (default_buffer_composition == buffer_composition)
 
     # rinses
     ethanol_rinse = ROADMAP_QCMD_RinseLoopInjectandMeasure(Target_Composition=Composition(solvents=[manager.solvent_from_material('ethanol', fraction=1)], solutes=[]),
@@ -147,6 +154,16 @@ def collect_data(manager_address: str,
                                                       Measurement_Time=1)
     
     buffer_control = ROADMAP_QCMD_RinseLoopInjectandMeasure(id=str(uuid4()),
+                                                            Target_Composition=default_buffer_composition,
+                                                      Volume=1.5,
+                                                      Injection_Flow_Rate=exchange_flow_rate,
+                                                      Extra_Volume=0.1,
+                                                      Is_Organic=False,
+                                                      Use_Bubble_Sensors=True,
+                                                      Equilibration_Time=5,
+                                                      Measurement_Time=3)
+
+    salt_buffer_control = ROADMAP_QCMD_LoopInjectandMeasure(id=str(uuid4()),
                                                             Target_Composition=buffer_composition,
                                                       Volume=1.5,
                                                       Injection_Flow_Rate=exchange_flow_rate,
@@ -155,7 +172,6 @@ def collect_data(manager_address: str,
                                                       Use_Bubble_Sensors=True,
                                                       Equilibration_Time=5,
                                                       Measurement_Time=3)
-                                                          
    
     second_water_rinse = ROADMAP_QCMD_RinseLoopInjectandMeasure(
                                                       Target_Composition=water,
@@ -184,29 +200,44 @@ def collect_data(manager_address: str,
                                             Lipid_Injection_Volume=1.0,
                                             Buffer_Composition=buffer_composition,
                                             Buffer_Injection_Volume=1.5,
-                                            Use_Rinse_System_for_Buffer=True,
+                                            Use_Rinse_System_for_Buffer=default_salt,
                                             Extra_Volume=0.1,
                                             Rinse_Volume=2.0,
                                             Flow_Rate=2.0,
                                             Exchange_Flow_Rate=max(exchange_flow_rate, 0.1),
                                             Equilibration_Time=5.0,
                                             Measurement_Time=3.0)
-    
+
+    default_buffer_rinse = ROADMAP_QCMD_RinseLoopInjectandMeasure(id=str(uuid4()),
+                                                            Target_Composition=default_buffer_composition,
+                                                      Volume=1.5,
+                                                      Injection_Flow_Rate=exchange_flow_rate,
+                                                      Extra_Volume=0.1,
+                                                      Is_Organic=False,
+                                                      Use_Bubble_Sensors=True,
+                                                      Equilibration_Time=5,
+                                                      Measurement_Time=3)
+
     # set up running protocol. Note that measurement methods must have an ID
     methods = [
         water_rinse,
         ethanol_rinse,
         ]
-    if control:
+    if control | (not default_salt):
+        methods.append(isopropanol_rinse)
+        if not default_salt:
+            methods.append(salt_buffer_control)
+        if control:
+            methods.append(buffer_control)
         methods += [
-            isopropanol_rinse,
-            buffer_control,
             second_water_rinse,
             second_ethanol_rinse,
         ]
     methods += [
         make_bilayer
     ]
+    if not default_salt:
+        methods.append(default_buffer_rinse)
 
     # Initiate sample
     sample = Sample(name=sample_name,
@@ -225,22 +256,44 @@ def collect_data(manager_address: str,
     #sample.stages['methods'].add(ethanol_rinse)
     #sample.stages['methods'].add(isopropanol_rinse)
 
+    if not default_salt:
+        print('Waiting for salt control measurement result...')
+        salt_control_result = manager.wait_for_result(sample, salt_buffer_control.id, stop_event)
+    else:
+        salt_control_result = None
+        
     if control:
         print('Waiting for control measurement result...')
         control_result = manager.wait_for_result(sample, buffer_control.id, stop_event)
     else:
         control_result = None
 
+
+
     print('Waiting for measurement result...')
 
     # make the bilayer
     measure_result = manager.wait_for_result(sample, make_bilayer.id, stop_event)
 
+    if not default_salt:
+        print('Waiting for default salt measurement result...')
+        default_salt_measure_result = manager.wait_for_result(sample, default_buffer_rinse.id, stop_event)
+    else:
+        default_salt_measure_result = None
+
     # archive the sample to clean up the GUI
     #manager.archive_sample(sample)
 
     # parse and combine the results
-    return {'control': control_result, 'measure': measure_result}
+    if default_salt:
+        res = {'control': control_result, 'measure': measure_result}
+    else:
+        res = {'control': control_result,
+               'measure': default_salt_measure_result,
+               'salt_control': salt_control_result,
+               'salt_measure': measure_result}
+
+    return res
 
 def reduce_qcmd(meas: dict, control: dict, harmonic_power: float = 1) -> float:
     """Data reduction for measurement and control. Performs the following steps:
