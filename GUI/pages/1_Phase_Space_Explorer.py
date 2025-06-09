@@ -190,9 +190,8 @@ def monitor():
         pass
 
 
-def run_measurment(kwargs):
+def run_measurement(kwargs):
     success = app_functions.run_pse(**kwargs)
-
     if success:
         st.session_state['job_status'] = 'idle'
     else:
@@ -240,36 +239,37 @@ def parameter_input():
 
 @st.fragment(run_every=6)
 def start_stop_optimization():
-    col_opt_5, col_opt_6 = st.columns([1, 1])
+    kwargs = {'exp_par': st.session_state['opt_pars'],
+              'storage_path': st.session_state['user_qcmd_opt_dir'],
+              'acq_func': opt_acq,
+              'client': client,
+              'optimizer': opt_optimizer,
+              'gpcam_init_dataset_size': init_iter,
+              'gpcam_iterations': gp_iter,
+              'parallel_measurements': parallel_meas,
+              'resume': True,
+              'project_name': st.session_state['active_project']
+              }
 
-    if col_opt_5.button('Start Optimization', disabled=(st.session_state['jobs_status'] == 'running'),
-                        use_container_width=True):
+    col_opt_5, col_opt_6 = st.columns([1, 1])
+    sui = col_opt_5.toggle('Start Up Instrumentation', disabled=(st.session_state['jobs_status'] != 'idle' and
+                                                                 st.session_state['jobs_status'] != 'running'),
+                           use_container_width=True)
+    if sui:
         if st.session_state['jobs_status'] == 'idle':
             st.session_state['gp_iterations'] = gp_iter
-
-            kwargs = {'exp_par': st.session_state['opt_pars'],
-                      'storage_path': st.session_state['user_qcmd_opt_dir'],
-                      'acq_func': opt_acq,
-                      'client': client,
-                      'optimizer': opt_optimizer,
-                      'gpcam_init_dataset_size': init_iter,
-                      'gpcam_iterations': gp_iter,
-                      'parallel_measurements': parallel_meas,
-                      'resume': True,
-                      'project_name': st.session_state['active_project']
-                      }
-            success, port = app_functions.run_pse(**kwargs)
-
+            success = app_functions.run_pse(st.session_state['gp_server_port'], **kwargs)
             if success:
-                st.session_state['job_status'] = 'pending'
-                st.session_state['gp_server_port'] = port
+                st.session_state['job_status'] = 'pending startup'
             else:
                 st.session_state['job_status'] = 'failure'
-                st.session_state['gp_server_port'] = None
+    else:
+        if st.session_state['jobs_status'] == 'running':
+            app_functions.communicate_get('/stop_pse', st.session_state['gp_server_port'])
+            st.session_state['jobs_status'] = 'pending shutdown'
 
-    if col_opt_6.button('Stop Optimization', disabled=(st.session_state['jobs_status'] != 'running'),
-                        use_container_width=True):
-        app_functions.communicate_get('/stop_pse', st.session_state['gp_server_port'])
+    rpse = col_opt_6.toggle('Run PSE', disabled=,
+                           use_container_width=True)
 
 
 # ------------  GUI -------------------

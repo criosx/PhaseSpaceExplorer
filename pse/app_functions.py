@@ -39,52 +39,29 @@ def communicate_get(endpoint, port):
     return response
 
 
-def run_pse(**kwargs):
+def run_pse(port, **kwargs):
     """
     Initializes and runs the Gaussian Process phase space exploration, PSE (also supports grid search). Results are
     saved in the pse_dir directory. Returns a success flag.
+    :param port: port number for GP server
     :param kwargs: (dict) argurments to be passed through to gp.__init__()
     :return: (Bool) success flag.
     """
 
-    # check if previous port file exists and delete it if it does
-    pse_dir = kwargs['storage_path']
-    fp = os.path.join(pse_dir, 'service_port.txt')
-    if os.path.isfile(fp):
-        os.remove(fp)
+    start = time.time()
+    timeout = 10
+    while True:
+        try:
+            response = communicate_get('/', port)
+            if response.status_code in {200, 404, 405}:  # server is alive
+                break
+        except requests.exceptions.ConnectionError:
+            if time.time() - start > timeout:
+                raise TimeoutError(f"PSE server did not start in time.")
+            time.sleep(0.5)  # try again soon
 
-    server_path = gp_server.__file__
-    subprocess.Popen(['python', server_path, pse_dir])
-    # flask_process = Process(target=gp_server.start_server, args=pse_dir)
-    # flask_process.start()
+    communicate_post('/start_pse', port, kwargs)
 
-    # check 10 times if new service port is available
-    success = False
-    for i in range(10):
-        if os.path.isfile(fp):
-            with open(fp, "r") as f:
-                port = f.read().strip()
-                port = int(port)
-
-            start = time.time()
-            timeout = 10
-            while True:
-                try:
-                    response = communicate_get('/', port)
-                    if response.status_code in {200, 404, 405}:  # server is alive
-                        break
-                except requests.exceptions.ConnectionError:
-                    if time.time() - start > timeout:
-                        raise TimeoutError(f"PSE server did not start in time.")
-                    time.sleep(0.5)  # try again soon
-
-            communicate_post('/start_pse', port, kwargs)
-            success = True
-            break
-
-        else:
-            time.sleep(2)
-
-    return success, port
+    return True
 
 

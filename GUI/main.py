@@ -1,7 +1,12 @@
+from contextlib import closing
 import os
 import pandas
 from pathlib import Path
+import socket
 import streamlit as st
+import subprocess
+
+from pse import gp_server
 
 # check if all working directories exist
 app_dir = os.path.join(os.path.expanduser('~'), 'app_data')
@@ -19,6 +24,14 @@ st.session_state['streamlit_dir'] = streamlit_dir
 st.session_state['app_functions_dir'] = app_functions_dir
 st.session_state['active_project'] = None
 st.session_state['user_qcmd_opt_dir'] = None
+
+# get free server port
+with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+    s.bind(('', 0))  # Bind to a free port provided by the host.
+    port = s.getsockname()[1]  # Return the port number assigned.
+st.session_state['gp_server_port'] = port
+server_path = gp_server.__file__
+subprocess.Popen(['python', server_path, str(port)])
 
 df_folders = pandas.DataFrame({
     'App home': [st.session_state['streamlit_dir']],
