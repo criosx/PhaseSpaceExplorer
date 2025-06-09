@@ -576,9 +576,10 @@ class Gp:
 
     def gpcam_train(self, method='mcmc'):
         # following line to avoid bounds errors
-        #print('Original hyperparameters: ', self.my_ae.hyperparameters)
-        self.my_ae.set_hyperparameters(np.clip(self.my_ae.hyperparameters, self.hyper_bounds[:,0], self.hyper_bounds[:,1]))
-        #print('New hyperparameters: ', self.my_ae.hyperparameters)
+        # print('Original hyperparameters: ', self.my_ae.hyperparameters)
+        self.my_ae.set_hyperparameters(np.clip(self.my_ae.hyperparameters, self.hyper_bounds[:, 0],
+                                               self.hyper_bounds[:, 1]))
+        # print('New hyperparameters: ', self.my_ae.hyperparameters)
         self.my_ae.train(
             hyperparameter_bounds=self.hyper_bounds,
             method=method,
@@ -590,7 +591,7 @@ class Gp:
             hyperparameter_bounds=self.hyper_bounds,
             max_iter=10000
         )
-        #self.my_ae.update_hyperparameters(opt_obj)
+        # self.my_ae.update_hyperparameters(opt_obj)
         return opt_obj
 
     def gridsearch_iterate_over_all_indices(self, refinement=False):
@@ -693,9 +694,12 @@ class Gp:
         if self.optimizer != 'grid' or self.optimizer != 'gpcam':
             self.task_dict['status'] = 'failure - optimization method not implemented'
 
-        if not self.gp_hardware_intitialzation():
-            self.task_dict['status'] = 'failure - could not initialize hardware'
-            return False
+        if 'paused' in self.task_dict and not self.task_dict['paused']:
+            # only intialize hardware if PSE was not paused before (hardware already initialized)
+            if not self.gp_hardware_intitialzation():
+                self.task_dict['status'] = 'failure - could not initialize hardware'
+                return False
+        self.task_dict['paused'] = False
 
         self.task_dict = task_dict
         self.task_dict['status'] = 'running'
@@ -710,9 +714,11 @@ class Gp:
                 self.task_dict['status'] = 'failure - PSE failed during optimization'
                 return False
 
-        if not self.gp_hardware_shutdown():
-            self.task_dict['status'] = 'failure - Could not shutdown hardware'
-            return False
+        if 'paused' in self.task_dict and not self.task_dict['paused']:
+            # only shut down hardware if not paused
+            if not self.gp_hardware_shutdown():
+                self.task_dict['status'] = 'failure - Could not shutdown hardware'
+                return False
 
         self.task_dict['status'] = 'idle'
         return True
