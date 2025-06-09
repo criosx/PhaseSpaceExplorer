@@ -181,7 +181,10 @@ def monitor():
                 png_files.append(full_path)
 
     for file in png_files:
-        st.image(file, use_container_width=True)
+        try:
+            st.image(file, use_container_width=True)
+        except FileNotFoundError:
+            pass
 
     if st.button('Update job monitor'):
         pass
@@ -244,12 +247,16 @@ def start_stop_optimization():
         if st.session_state['jobs_status'] == 'idle':
             st.session_state['gp_iterations'] = gp_iter
 
-            kwargs = {'pse_pars': st.session_state['opt_pars'],
-                      'pse_dir': st.session_state['user_qcmd_opt_dir'],
+            kwargs = {'exp_par': st.session_state['opt_pars'],
+                      'storage_path': st.session_state['user_qcmd_opt_dir'],
                       'acq_func': opt_acq,
+                      'client': client,
                       'optimizer': opt_optimizer,
+                      'gpcam_init_dataset_size': init_iter,
                       'gpcam_iterations': gp_iter,
-                      'parallel_measurements': parallel_meas
+                      'parallel_measurements': parallel_meas,
+                      'resume': True,
+                      'project_name': st.session_state['active_project']
                       }
             success, port = app_functions.run_pse(**kwargs)
 
@@ -336,11 +343,18 @@ else:
 
 opt_acq = 'variance'
 gp_iter = 50
+init_iter = 10
 if opt_optimizer == 'gpcam':
     gp_iter = col_opt_3.number_input('GP iterations', min_value=20, value=1000, format='%i', step=100)
-    opt_acq = col_opt_3.selectbox("GP acquisition function", ['variance', 'ucb', 'relative information entropy',
-                                                              'probability of improvement'])
+    init_iter = col_opt_3.number_input('Initial Measurments', min_value=1, value=10, format='%i', step=1)
+    opt_acq = col_opt_3.selectbox("GP acquisition function", ['variance', 'ucb', 'lcb', 'maximum', 'minimum',
+                                                              'gradient', 'total correlation', 'expected improvement',
+                                                              'probability of improvement',
+                                                              'relative information entropy',
+                                                              'relative information entropy set',
+                                                              'target probability'])
 
+client = col_opt_4.selectbox("client", ['ROADMAP', 'Test Ackley Function', ])
 parallel_meas = col_opt_4.number_input('Parallel measurements', min_value=1, value=1, step=1, format='%i')
 
 start_stop_optimization()

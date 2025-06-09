@@ -1,17 +1,16 @@
 from contextlib import closing
 from flask import Flask
 from flask import abort, request
-from multiprocessing import Process, Manager
+# from multiprocessing import Process, Manager
+from threading import Thread
 import os
 import socket
 import sys
 
-
-from pse import gp
-
 app = Flask(__name__)
 gpo = None
 port = None
+p = None
 task_dict = {}
 
 
@@ -50,11 +49,6 @@ def start_server(storage_dir):
     with open(fp, "w") as f:
         f.write(str(port))
     print(f"Starting Phase Space Explorer Flask server on port {port}")
-
-    manager = Manager()
-    # shared dict between server and subprocesses using the Manager funcitonality
-    task_dict = manager.dict({"status": "idle", "progress": "0%", "cancelled": False})
-
     app.run(port=port)
 
 
@@ -67,6 +61,7 @@ def start_pse():
     """
     global gpo
     global task_dict
+    global p
 
     if request.method != 'POST':
         abort(400, description='Request method is not POST.')
@@ -75,11 +70,27 @@ def start_pse():
     if data is None or not isinstance(data, dict):
         abort(400, description='No valid data received.')
 
-    gpo = gp.Gp(**data)
+    if p is not None:
+        abort(400, description='Another gp instance is already running.')
+
+    if 'client' in data:
+        if data['client'] == 'ROADMAP':
+            from pse.roadmap import ROADMAP_Gp as gpobject
+        elif data['client'] == 'Test Ackley Function':
+            from pse.gp import Gp as gpobject
+        del data['client']
+    else:
+        from pse.roadmap import ROADMAP_Gp as gpobject
+
+    gpo = gpobject(**data)
+    # manager = Manager()
+    # task_dict = manager.dict()
     task_dict["status"] = "running"
     task_dict["progress"] = "0%"
     task_dict["cancelled"] = False
-    p = Process(target=gpo.run, args=(task_dict, ))
+    # gp client needs to be a process, otherwise the server will stop responding during computation intensive
+    # tasks in the client.
+    p = Thread(target=gpo.run, args=(task_dict, ))
     p.start()
 
     return "PSE started"
@@ -88,9 +99,16 @@ def start_pse():
 @app.route('/stop_pse', methods=['GET'])
 def stop_pse():
     global task_dict
+    global p
+    global gpo
+
     if task_dict:
         task_dict["cancelled"] = True
-    return "Stopping of PSE tasks initialized"
+    if p is not None:
+        p.join()
+        gpo = None
+
+    return "PSE stopped"
 
 
 if __name__ == "__main__":

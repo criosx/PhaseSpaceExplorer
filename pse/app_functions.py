@@ -39,20 +39,16 @@ def communicate_get(endpoint, port):
     return response
 
 
-def run_pse(pse_pars, pse_dir, acq_func="variance", optimizer='gpcam', gpcam_iterations=50, parallel_measurements=1):
+def run_pse(**kwargs):
     """
     Initializes and runs the Gaussian Process phase space exploration, PSE (also supports grid search). Results are
     saved in the pse_dir directory. Returns a success flag.
-    :param pse_pars: (dict) PSE parameters, those that are being optimized and those that are not.
-    :param pse_dir: (str) Path to the directory where the results are saved.
-    :param acq_func: (str) gpCAM acquisition function
-    :param optimizer: (str) PSE optimization algorithm (gpcam or grid)
-    :param gpcam_iterations: (int) number of Gaussian Process iterations
-    :param parallel_measurements: (int) number of parallel measurements per iteration
+    :param kwargs: (dict) argurments to be passed through to gp.__init__()
     :return: (Bool) success flag.
     """
 
     # check if previous port file exists and delete it if it does
+    pse_dir = kwargs['storage_path']
     fp = os.path.join(pse_dir, 'service_port.txt')
     if os.path.isfile(fp):
         os.remove(fp)
@@ -70,16 +66,6 @@ def run_pse(pse_pars, pse_dir, acq_func="variance", optimizer='gpcam', gpcam_ite
                 port = f.read().strip()
                 port = int(port)
 
-            kwdir = {
-                'exp_par': pse_pars,
-                'storage_path': pse_dir,
-                'acq_func': acq_func,
-                'optimizer': optimizer,
-                'gpcam_iterations': gpcam_iterations,
-                'parallel_measurements': parallel_measurements,
-                'resume': True
-            }
-
             start = time.time()
             timeout = 10
             while True:
@@ -92,7 +78,7 @@ def run_pse(pse_pars, pse_dir, acq_func="variance", optimizer='gpcam', gpcam_ite
                         raise TimeoutError(f"PSE server did not start in time.")
                     time.sleep(0.5)  # try again soon
 
-            communicate_post('/start_pse', port, kwdir)
+            communicate_post('/start_pse', port, kwargs)
             success = True
             break
 
