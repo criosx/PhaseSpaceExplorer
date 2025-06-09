@@ -261,7 +261,7 @@ def collect_data(manager_address: str,
         salt_control_result = manager.wait_for_result(sample, salt_buffer_control.id, stop_event)
     else:
         salt_control_result = None
-        
+
     if control:
         print('Waiting for control measurement result...')
         control_result = manager.wait_for_result(sample, buffer_control.id, stop_event)
@@ -600,7 +600,7 @@ class ROADMAP_Gp(Gp):
                                                    raw_result=raw_result,
                                                    reduced_result=reduced_result)})
         with open(storage_path, 'w') as f:
-            json.dump(current_results, f)
+            json.dump(current_results, f, indent=2)
 
     def do_measurement_test(self, optpars, it_label, entry, q):
         
