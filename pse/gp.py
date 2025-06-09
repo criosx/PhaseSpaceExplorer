@@ -311,6 +311,20 @@ class Gp:
 
         return result, variance
 
+    def gp_hardware_intitialzation(self):
+        """
+        Method to be implemented in each subclass that initializes the measurement hardware.
+        :return: (bool) True if successful, False otherwise.
+        """
+        return True
+
+    def gp_hardware_shutdown(self):
+        """
+        Method to be implemented in each subclass that shuts down the measurement hardware.
+        :return: (bool) True if successful, False otherwise.
+        """
+        return True
+
     def gpcam_init_ae(self, just_gpcamstream=False):
         if not just_gpcamstream:
             # Compute Input Ranges
@@ -670,6 +684,19 @@ class Gp:
             pickle.dump(output_df, file)
 
     def run(self, task_dict):
+        """
+        Runs the PSE algorithm. Parameters are provided in the task_dict dictionary.
+        :param task_dict: (dict) A dictionary containing the parameters to be passed to the PSE algorithm.
+        :return: (bool) True if the algorithm ran succesfully, False otherwise.
+        """
+
+        if self.optimizer != 'grid' or self.optimizer != 'gpcam':
+            self.task_dict['status'] = 'failure - optimization method not implemented'
+
+        if not self.gp_hardware_intitialzation():
+            self.task_dict['status'] = 'failure - could not initialize hardware'
+            return False
+
         self.task_dict = task_dict
         self.task_dict['status'] = 'running'
 
@@ -677,15 +704,16 @@ class Gp:
             self.run_optimization_grid()
         elif self.optimizer == 'gpcam':
             self.gpcam_optimization_loop()
-        else:
-            self.task_dict['status'] = 'failure'
-            raise NotImplementedError('Unknown optimization method')
 
         if self.measurement_aborted:
             if self.task_dict['status'] == 'failure':
+                self.task_dict['status'] = 'failure - PSE failed during optimization'
                 return False
 
-        # stopping or running status reset to idle
+        if not self.gp_hardware_shutdown():
+            self.task_dict['status'] = 'failure - Could not shutdown hardware'
+            return False
+
         self.task_dict['status'] = 'idle'
         return True
 
