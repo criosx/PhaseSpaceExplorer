@@ -15,7 +15,20 @@ sys.path.append(st.session_state['app_functions_dir'])
 
 if 'jobs_status' not in st.session_state:
     # valid job status values: pending, idle, running, failure, (down)
-    st.session_state['jobs_status'] = 'pending'
+    st.session_state['jobs_status'] = 'idle'
+
+    # Jobs status values for PSE
+    # down - no answer from server
+    # idle - server up, instruments not initialized
+    # instruments initialized - PSE ready to go
+    # running - PSE running
+    # paused - PSE paused
+    
+    # pending PSE startup -
+    # pending PSE shutdown -
+    # pending PSE pause -
+    # pending PSE resume -
+
 if 'widget_key' not in st.session_state:
     st.session_state['widget_key'] = str(uuid.uuid4())
 if 'gp_iterations' not in st.session_state:
@@ -27,6 +40,41 @@ if 'measurement_process' not in st.session_state:
 
 
 # ------------ Functionality -----------
+def adjust_PSE_status():
+    if st.session_state['gp_server_port'] is None:
+        return
+
+    port = st.session_state['gp_server_port']
+    status = app_functions.communicate_get('/get_status', port).text
+    jstatus = st.session_state['jobs_status']
+
+    print('Incoming status for server : {} and Streamlit : {}'.format(status, jstatus))
+
+    if 'failure' in status:
+        st.session_state['jobs_status'] = jstatus
+        return
+
+    if jstatus == 'pending PSE startup' or jstatus == 'pending PSE resume':
+        if status == 'running':
+            st.session_state['jobs_status'] = 'running'
+
+    elif jstatus == 'pending PSE pause':
+        if status == 'idle':
+            st.session_state['jobs_status'] = 'paused'
+
+    elif jstatus == 'pending PSE shutdown':
+        if status == 'idle':
+            st.session_state['jobs_status'] = 'idle'
+
+    # catches reruns of Stremlit scripts while the server continues in the background
+    elif jstatus == 'idle' and status == 'running':
+        st.session_state['jobs_status'] = 'running'
+
+    print('Outgoing status for Streamlit: {}'.format(st.session_state['jobs_status']))
+
+    return
+
+
 def activate_project(project_name):
     print('activating ...')
     project_dir = os.path.join(st.session_state['streamlit_dir'], project_name, 'phase_space')
@@ -98,13 +146,7 @@ def load_session_state(folder):
 def monitor():
     # list jobs status
     st.info('Server port: {}'.format(st.session_state['gp_server_port']))
-    if st.session_state['gp_server_port'] is not None:
-        port = st.session_state['gp_server_port']
-        st.session_state['jobs_status'] = app_functions.communicate_get('/get_status', port).text
-        if st.session_state['jobs_status'] == 'down':
-            st.session_state['jobs_status'] = 'idle'
-    else:
-        st.session_state['jobs_status'] = 'idle'
+    adjust_PSE_status()
     st.info('Job status: {}'.format(st.session_state['jobs_status']))
 
     # List to store paths to .png files
@@ -237,7 +279,6 @@ def parameter_input():
         save_session_state(st.session_state['user_qcmd_opt_dir'])
 
 
-@st.fragment(run_every=6)
 def start_stop_optimization():
     kwargs = {'exp_par': st.session_state['opt_pars'],
               'storage_path': st.session_state['user_qcmd_opt_dir'],
@@ -252,24 +293,45 @@ def start_stop_optimization():
               }
 
     col_opt_5, col_opt_6 = st.columns([1, 1])
-    sui = col_opt_5.toggle('Start Up Instrumentation', disabled=(st.session_state['jobs_status'] != 'idle' and
-                                                                 st.session_state['jobs_status'] != 'running'),
-                           use_container_width=True)
-    if sui:
-        if st.session_state['jobs_status'] == 'idle':
-            st.session_state['gp_iterations'] = gp_iter
-            success = app_functions.run_pse(st.session_state['gp_server_port'], **kwargs)
-            if success:
-                st.session_state['job_status'] = 'pending startup'
-            else:
-                st.session_state['job_status'] = 'failure'
-    else:
-        if st.session_state['jobs_status'] == 'running':
-            app_functions.communicate_get('/stop_pse', st.session_state['gp_server_port'])
-            st.session_state['jobs_status'] = 'pending shutdown'
+    adjust_PSE_status()
+    port = st.session_state['gp_server_port']
+    jstatus = st.session_state['jobs_status']
 
-    rpse = col_opt_6.toggle('Run PSE', disabled=,
-                           use_container_width=True)
+    rpse = col_opt_5.toggle('Run PSE')
+    ppse = col_opt_6.toggle('Pause PSE', disabled=(not rpse))
+
+    if jstatus == 'running':
+        if not rpse:
+            if app_functions.stop_pse(port):
+                jstatus = 'pending PSE shutdown'
+            else:
+                jstatus = 'failure - PSE shutdown'
+        elif ppse:
+            if app_functions.pause_pse(port):
+                jstatus = 'pending PSE pause'
+            else:
+                jstatus = 'failure - PSE pause'
+    elif jstatus == 'idle':
+        if rpse and not ppse:
+            st.session_state['gp_iterations'] = gp_iter
+            if app_functions.run_pse(port, **kwargs):
+                jstatus = 'pending PSE startup'
+            else:
+                jstatus = 'failure - PSE startup'
+    elif jstatus == 'paused':
+        if not rpse:
+            if app_functions.stop_pse(port):
+                jstatus = 'pending PSE shutdown'
+            else:
+                jstatus = 'failure - PSE shutdown'
+        elif not ppse:
+            st.session_state['gp_iterations'] = gp_iter
+            if app_functions.resume_pse(port, **kwargs):
+                jstatus = 'pending PSE resume'
+            else:
+                jstatus = 'failure'
+
+    st.session_state['jobs_status'] = jstatus
 
 
 # ------------  GUI -------------------

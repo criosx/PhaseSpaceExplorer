@@ -43,12 +43,14 @@ class GpServer:
         if self.p is not None:
             self.p.join()
             self.gpo = None
+            self.p = None
         return "PSE paused"
 
     def resume_pse(self):
         if self.task_dict and self.task_dict['paused']:
             self.task_dict["cancelled"] = False
             self.start_pse()
+            return "PSE resumed"
         else:
             return "PSE was not paused."
 

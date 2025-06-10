@@ -39,15 +39,46 @@ def communicate_get(endpoint, port):
     return response
 
 
-def run_pse(port, **kwargs):
+def pause_pse(port):
     """
-    Initializes and runs the Gaussian Process phase space exploration, PSE (also supports grid search). Results are
+    Pauses the Gaussian Process phase space exploration, PSE (also supports grid search). Results are
+    saved in the pse_dir directory. Returns a success flag.
+    :param port: port number for GP server
+    :return: (Bool) success flag.
+    """
+    try:
+        communicate_get('/pause_pse', port)
+    except requests.exceptions.ConnectionError:
+        return False
+
+    return True
+
+
+def resume_pse(port, **kwargs):
+    """
+    Resumes the Gaussian Process phase space exploration, PSE (also supports grid search). Results are
     saved in the pse_dir directory. Returns a success flag.
     :param port: port number for GP server
     :param kwargs: (dict) argurments to be passed through to gp.__init__()
     :return: (Bool) success flag.
     """
+    try:
+        communicate_post('/resume_pse', port, kwargs)
+    except requests.exceptions.ConnectionError:
+        return False
 
+    return True
+
+
+def run_pse(port, **kwargs):
+    """
+    Initializes and runs the Gaussian Process phase space exploration, PSE (also supports grid search). Results are
+    saved in the pse_dir directory. Returns a success flag. Initializes the instrumentation
+    :param port: port number for GP server
+    :param kwargs: (dict) argurments to be passed through to gp.__init__()
+    :return: (Bool) success flag.
+    """
+    '''
     start = time.time()
     timeout = 10
     while True:
@@ -59,8 +90,27 @@ def run_pse(port, **kwargs):
             if time.time() - start > timeout:
                 raise TimeoutError(f"PSE server did not start in time.")
             time.sleep(0.5)  # try again soon
+    '''
 
-    communicate_post('/start_pse', port, kwargs)
+    try:
+        communicate_post('/start_pse', port, kwargs)
+    except requests.exceptions.ConnectionError:
+        return False
+
+    return True
+
+
+def stop_pse(port):
+    """
+    Stops the Gaussian Process phase space exploration, PSE (also supports grid search). Results are
+    saved in the pse_dir directory. Returns a success flag. Shuts down the instrumentation.
+    :param port: port number for GP server
+    :return: (Bool) success flag.
+    """
+    try:
+        communicate_get('/stop_pse', port)
+    except requests.exceptions.ConnectionError:
+        return False
 
     return True
 
