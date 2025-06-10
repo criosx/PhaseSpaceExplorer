@@ -293,12 +293,11 @@ def start_stop_optimization():
               }
 
     col_opt_5, col_opt_6 = st.columns([1, 1])
-    adjust_PSE_status()
     port = st.session_state['gp_server_port']
     jstatus = st.session_state['jobs_status']
 
-    rpse = col_opt_5.toggle('Run PSE')
-    ppse = col_opt_6.toggle('Pause PSE', disabled=(not rpse))
+    rpse = col_opt_5.toggle('Run PSE', on_change=adjust_PSE_status)
+    ppse = col_opt_6.toggle('Pause PSE', disabled=(not rpse), on_change=adjust_PSE_status)
 
     if jstatus == 'running':
         if not rpse:
@@ -329,7 +328,7 @@ def start_stop_optimization():
             if app_functions.resume_pse(port, **kwargs):
                 jstatus = 'pending PSE resume'
             else:
-                jstatus = 'failure'
+                jstatus = 'failure - PSE resume'
 
     st.session_state['jobs_status'] = jstatus
 
