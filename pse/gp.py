@@ -316,6 +316,9 @@ class Gp:
         Method to be implemented in each subclass that initializes the measurement hardware.
         :return: (bool) True if successful, False otherwise.
         """
+        print("Initializing GP hardware...")
+        time.sleep(10)
+        print("GP hardware intialized.")
         return True
 
     def gp_hardware_shutdown(self):
@@ -323,6 +326,9 @@ class Gp:
         Method to be implemented in each subclass that shuts down the measurement hardware.
         :return: (bool) True if successful, False otherwise.
         """
+        print("Shutting down GP hardware...")
+        time.sleep(10)
+        print("GP hardware shutdown.")
         return True
 
     def gpcam_init_ae(self, just_gpcamstream=False):
@@ -694,14 +700,17 @@ class Gp:
         if self.optimizer != 'grid' or self.optimizer != 'gpcam':
             self.task_dict['status'] = 'failure - optimization method not implemented'
 
-        if 'paused' in self.task_dict and not self.task_dict['paused']:
-            # only intialize hardware if PSE was not paused before (hardware already initialized)
+        self.task_dict = task_dict
+
+        if 'paused' not in self.task_dict:
+            self.task_dict['paused'] = False
+
+        if not self.task_dict['paused']:
+            # only intialize hardware if PSE was not paused before since hardware would already be initialized
             if not self.gp_hardware_intitialzation():
                 self.task_dict['status'] = 'failure - could not initialize hardware'
                 return False
         self.task_dict['paused'] = False
-
-        self.task_dict = task_dict
         self.task_dict['status'] = 'running'
 
         if self.optimizer == 'grid':
@@ -714,7 +723,7 @@ class Gp:
                 self.task_dict['status'] = 'failure - PSE failed during optimization'
                 return False
 
-        if 'paused' in self.task_dict and not self.task_dict['paused']:
+        if not self.task_dict['paused']:
             # only shut down hardware if not paused
             if not self.gp_hardware_shutdown():
                 self.task_dict['status'] = 'failure - Could not shutdown hardware'
