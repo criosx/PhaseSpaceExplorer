@@ -49,6 +49,9 @@ class GpServer:
     def resume_pse(self):
         if self.task_dict and self.task_dict['paused']:
             self.task_dict["cancelled"] = False
+            # call start PSE function as functionally a restart from Pause is only different in that the hardware
+            # is not being reiniatialized, which will be decided based on inside gp.py the 'paused' flag in the
+            # task_dict
             self.start_pse()
             return "PSE resumed"
         else:
@@ -57,8 +60,9 @@ class GpServer:
     def run(self, port=None):
         if port is None:
             with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
-                s.bind(('', 0))  # Bind to a free port provided by the host.
-                port = s.getsockname()[1]  # Return the port number assigned.
+                # Bind to a free port provided by the host.
+                s.bind(('', 0))
+                port = s.getsockname()[1]
         self.port = port
         print(f"Starting Phase Space Explorer Flask server on port {self.port}")
         self.app.run(port=self.port)

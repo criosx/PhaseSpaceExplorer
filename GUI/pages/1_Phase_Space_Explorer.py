@@ -48,8 +48,6 @@ def adjust_PSE_status():
     status = app_functions.communicate_get('/get_status', port).text
     jstatus = st.session_state['jobs_status']
 
-    print('Incoming status for server : {} and Streamlit : {}'.format(status, jstatus))
-
     if 'failure' in status:
         st.session_state['jobs_status'] = jstatus
         return
@@ -69,8 +67,6 @@ def adjust_PSE_status():
     # catches reruns of Stremlit scripts while the server continues in the background
     elif jstatus == 'idle' and status == 'running':
         st.session_state['jobs_status'] = 'running'
-
-    print('Outgoing status for Streamlit: {}'.format(st.session_state['jobs_status']))
 
     return
 
@@ -285,12 +281,18 @@ def start_stop_optimization():
               'acq_func': opt_acq,
               'client': client,
               'optimizer': opt_optimizer,
+              'gp_discrete_points': None,
               'gpcam_init_dataset_size': init_iter,
               'gpcam_iterations': gp_iter,
               'parallel_measurements': parallel_meas,
               'resume': True,
               'project_name': st.session_state['active_project']
               }
+
+    save_exists = os.path.isfile(os.path.join(st.session_state['user_qcmd_opt_dir'], 'evaluation_points.json'))
+    reuse_points = st.checkbox('Reuse saved evaluation points', value=False, disabled=(not save_exists))
+    if reuse_points:
+        kwargs['gp_discrete_points'] = 'default file'
 
     col_opt_5, col_opt_6 = st.columns([1, 1])
     port = st.session_state['gp_server_port']

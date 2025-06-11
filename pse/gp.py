@@ -48,6 +48,29 @@ def nice_interval(start=0, stop=1, step=None, numsteps=10):
     return np.arange(new_start, new_stop+0.05*new_step, new_step)
 
 
+def pack(data):
+    """
+    Pack a numpy array or a list of tuples/lists into a dictionary
+    for serialization (e.g., to JSON).
+
+    :param data: numpy array OR list of tuples/lists
+    :return: (dict) packed array
+    """
+    if isinstance(data, np.ndarray):
+        nparray = data
+    elif isinstance(data, (list, tuple)) and all(isinstance(el, (list, tuple, np.ndarray)) for el in data):
+        nparray = np.array(data)
+    else:
+        raise TypeError("Input must be a numpy array or a list/tuple of tuples/lists.")
+
+    ret = {
+        "array": nparray.tolist(),
+        "dtype": str(nparray.dtype),
+        "shape": nparray.shape
+    }
+    return ret
+
+
 def save_plot_1d(x, y, dy=None, xlabel='', ylabel='', color='blue', filename="plot", ymin=None, ymax=None, levels=5,
                  niceticks=False, keep_plots=False, support_points=None):
     import matplotlib.pyplot as plt
@@ -132,6 +155,18 @@ def save_plot_2d(x, y, z, xlabel, ylabel, color, filename='plot', zmin=None, zma
     plt.close("all")
 
 
+def unpack(packed):
+    """
+    Unpack a dictionary produced by `pack()` back into a NumPy array.
+
+    :param packed: (dict) with keys 'array', 'dtype', 'shape'
+    :return: (np.ndarray) reconstructed NumPy array
+    """
+    array = np.array(packed["array"], dtype=packed["dtype"])
+    array = array.reshape(packed["shape"])
+    return array
+
+
 class Gp:
     def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50,
                  gpcam_init_dataset_size=20, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam',
@@ -145,6 +180,9 @@ class Gp:
         :param gp_discrete_points: (ndarray or list) of shape V x D, where D is the length of the input vector that
                                    defines the grid of possible measurement points. If gp_discrete points is provided,
                                    there still needs to be an exp_par dataframe for plotting and naming.
+                                   (string) If a string is provided, this is interpreted as a filenam of a json
+                                   file that contains the discrete points, if the string value is 'default file', the
+                                   default filename /evaluation_points.json is used.
         :param resume: (bool, default False) loads previous results from the storage path.
         :param signal_estimate: (float) estimated max signal (max - min) for gp hyperparameter setting
         """
@@ -230,14 +268,27 @@ class Gp:
                 self.results_io(load=True)
 
         elif self.optimizer == 'gpcam':
-            # create discrete points for the GPOptimizer, if none were provided
+            # use provided or load discrete evaluation points for the GPOptimizer
+            # create them from bounds and stepsizes, if none were provided
             if gp_discrete_points is not None:
-                self.gp_discrete_points = gp_discrete_points
+                if isinstance(gp_discrete_points, str):
+                    if gp_discrete_points == 'default file':
+                        gp_discrete_points = path.join(self.spath, 'evaluation_points.json')
+                    self.gpcam_load_discrete_evaluation_points(gp_discrete_points)
+                else:
+                    self.gp_discrete_points = gp_discrete_points
             else:
                 grids = np.meshgrid(*self.axes, indexing='ij')
                 self.gp_discrete_points = np.stack(grids, axis=-1).reshape(-1, len(self.axes))
                 # make this numpy array into a list of numpy arrays along axis 0
+                # This is mainly for GPOptimizer.ask(), which requires a list of 1d-numpy arrays for non-Eucledian
+                # inputs
                 self.gp_discrete_points = [self.gp_discrete_points[i] for i in range(self.gp_discrete_points.shape[0])]
+
+            # save discrete points for later reuse if not loaded from file
+            if not isinstance(gp_discrete_points, str):
+                self.gpcam_save_discrete_evaluation_points()
+
             self.hyper_bounds = None
 
             if resume:
@@ -385,6 +436,12 @@ class Gp:
             v = None
             self.gpiteration = 0
         return
+
+    def gpcam_load_discrete_evaluation_points(self, filename):
+        with open(filename, 'r') as file:
+            packed = json.load(file)
+        self.gp_discrete_points = unpack(packed)
+        self.gp_discrete_points = [self.gp_discrete_points[i] for i in range(self.gp_discrete_points.shape[0])]
 
     def gpcam_optimization_loop(self):
         def collect_measurement(gpcam_initialized=False):
@@ -580,6 +637,13 @@ class Gp:
         self.prediction_var_gpcam = self.my_ae.posterior_covariance(prediction_positions, variance_only=True, add_noise=False)["v(x)"]
         # self.prediction_var_gpcam = var.reshape(self.steplist)
 
+    def gpcam_save_discrete_evaluation_points(self):
+        if self.gp_discrete_points is None:
+            return
+        packed = pack(self.gp_discrete_points)
+        with open(path.join(self.spath, 'evaluation_points.json'), 'w') as file:
+            json.dump(packed, file)
+
     def gpcam_train(self, method='mcmc'):
         # following line to avoid bounds errors
         # print('Original hyperparameters: ', self.my_ae.hyperparameters)
@@ -747,14 +811,6 @@ class Gp:
                     break
 
     def results_io(self, load=False):
-        def pack(nparray):
-            return_data = {
-                "array": nparray.tolist(),
-                "dtype": str(nparray.dtype),
-                "shape": nparray.shape
-            }
-            return return_data
-
         if self.optimizer == 'grid':
             if load:
                 with open(path.join(self.spath, 'results', 'pse_grid_results.pkl'), 'rb') as file:
