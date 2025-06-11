@@ -10,10 +10,10 @@ from scipy.special import erf
 from threading import Event
 from uuid import uuid4
 
-from pse.manager import MANAGER_ADDRESS, ManagerInterface
 from pse.gp import Gp
 from gpcam import GPOptimizer
 
+from lh_manager.client import ManagerClient
 from lh_manager.liquid_handler.bedlayout import Composition
 from lh_manager.liquid_handler.formulation import SoluteFormulation
 from lh_manager.liquid_handler.roadmapmethods import (ROADMAP_QCMD_MakeBilayer,
@@ -30,6 +30,8 @@ from lh_manager.liquid_handler.roadmapmethods import (ROADMAP_QCMD_MakeBilayer,
                                                       ROADMAP_DirectInjecttoQCMD)
                                                       
 from lh_manager.liquid_handler.samplelist import Sample, MethodList
+
+MANAGER_ADDRESS = 'http://localhost:5001'
 
 def acq_variance_target(x: np.ndarray, gpoptimizer: GPOptimizer):
 
@@ -48,7 +50,7 @@ def acq_variance_target_add(x: np.ndarray, gpoptimizer: GPOptimizer):
     #print(retval)
     return retval
 
-def collect_data_sleep(manager: ManagerInterface,
+def collect_data_sleep(manager: ManagerClient,
                  bilayer_composition: Composition,
                  sample_name: str,
                  description: str,
@@ -107,7 +109,7 @@ def collect_data(manager_address: str,
     """
 
     # start new manager client in thread (can't use self.manager because not thread-safe)
-    manager = ManagerInterface(address=manager_address)
+    manager = ManagerClient(address=manager_address)
     manager.initialize()
 
     water = Composition(solvents=[manager.solvent_from_material('H2O', fraction=1)], solutes=[])
@@ -340,7 +342,7 @@ def reduce_qcmd(meas: dict, control: dict, harmonic_power: float = 1) -> float:
 
     return average, mix_variance
 
-def collect_wateripa(manager: ManagerInterface, ipa_fraction: float, sample_name: str, description: str, control: bool = True) -> tuple[float, float]:
+def collect_wateripa(manager: ManagerClient, ipa_fraction: float, sample_name: str, description: str, control: bool = True) -> tuple[float, float]:
     """Performs a bilayer formation measurement with a lipid composition and total lipid concentration.
     
         TODO: for now, assumes a single channel = 0, but in the future could implement a channel selector
@@ -497,7 +499,7 @@ class ROADMAP_Gp(Gp):
         self.control_cycle = 4
 
         # connect to manager
-        self.manager = ManagerInterface(address=MANAGER_ADDRESS)
+        self.manager = ManagerClient(address=MANAGER_ADDRESS)
         self.manager.initialize()
 
         # create a dictionary of lipid names and stock solution concentrations
@@ -745,7 +747,7 @@ if __name__ == '__main__':
     import json
 
     #pprint.pprint(manager.materials)
-    manager = ManagerInterface(address=MANAGER_ADDRESS)
+    manager = ManagerClient(address=MANAGER_ADDRESS)
     manager.initialize()
 
     if True:
