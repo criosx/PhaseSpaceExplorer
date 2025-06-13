@@ -503,7 +503,11 @@ class Gp:
                 self.gpcam_plot()
 
             self.results_io()
+            self.iterations_inprogress_save_to_file()
             return
+
+        # Rerun variable for the entire loop
+        rerun = False
 
         # Using the gpCAM global optimizer
         self.gpcam_init_ae()
@@ -536,7 +540,8 @@ class Gp:
                 self.gpiteration += 1
 
         printed = False
-        while len(self.measurement_inprogress) == self.gpcam_init_dataset_size and not self.task_dict.get("cancelled", False):
+        while (len(self.measurement_inprogress) == self.gpcam_init_dataset_size and
+               not self.task_dict.get("cancelled", False)):
             if not printed:
                 print('Waiting for at least one measurement to finish.')
                 printed = True
@@ -591,13 +596,38 @@ class Gp:
                     self.gpcam_train(method='local')
                     if submit_counter == n:
                         break
-
             else:
-                if not self.measurement_inprogress:
-                    # delete iterations in progress log file
-                    self.iterations_inprogress_delete_file()
                 # nothing to do
                 time.sleep(5)
+
+        if self.task_dict.get("paused", False):
+            was_paused = True
+        else:
+            was_paused = False
+
+        printed = False
+        while self.measurement_inprogress and (not self.task_dict.get("cancelled", False) or
+                                               self.task_dict.get("paused", False)):
+            if not printed:
+                print('Paused. Waiting for remaining measurements to finish. Stop PSE to abort.')
+                printed = True
+            if not self.measurement_results_queue.empty():
+                collect_measurement(gpcam_initialized=True)
+            else:
+                print('Still waiting for remaining measurements to finish.')
+                print(self.measurement_inprogress)
+                time.sleep(5)
+
+        if not self.measurement_inprogress:
+            # delete iterations in progress log file
+            self.iterations_inprogress_delete_file()
+
+        if not self.task_dict.get("paused", False) and was_paused:
+            # unpaused during pending pause!
+            # signal a restart of the function from the calling method
+            rerun = True
+
+        return rerun
 
     def gpcam_plot(self):
         path1 = path.join(self.spath, 'plots')
@@ -641,7 +671,6 @@ class Gp:
             filtered = filtered.to_numpy().T
             save_plot_1d(filtered[0], filtered[1:], filename=path.join(path1, 'hypars'), xlabel='iteration',
                          ylabel='information gain / hyperparameter', trace_label=hypar_cols, yscale='symlog')
-
 
     def gpcam_prediction(self):
         """
@@ -822,7 +851,8 @@ class Gp:
         if self.optimizer == 'grid':
             self.run_optimization_grid()
         elif self.optimizer == 'gpcam':
-            self.gpcam_optimization_loop()
+            while self.gpcam_optimization_loop():
+                pass
 
         if self.measurement_aborted:
             if self.task_dict['status'] == 'failure':
