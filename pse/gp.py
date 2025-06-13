@@ -71,8 +71,8 @@ def pack(data):
     return ret
 
 
-def save_plot_1d(x, y, dy=None, xlabel='', ylabel='', color='blue', filename="plot", ymin=None, ymax=None, levels=5,
-                 niceticks=False, keep_plots=False, support_points=None):
+def save_plot_1d(x, y, dy=None, xlabel='', ylabel='', color=None, filename="plot", ymin=None, ymax=None, levels=5,
+                 niceticks=False, keep_plots=False, support_points=None, trace_label=None, yscale='linear',):
     import matplotlib.pyplot as plt
     import matplotlib
 
@@ -86,19 +86,24 @@ def save_plot_1d(x, y, dy=None, xlabel='', ylabel='', color='blue', filename="pl
 
     fig, ax = plt.subplots()
     if dy is None:
-        ax.plot(x, y, color=color)
+        ax.plot(x, y.T, color=color, label=trace_label)
     else:
-        ax.errorbar(x, y, dy, color=color)
+        ax.errorbar(x, y, dy, color=color, label=trace_label)
     if niceticks:
         bounds = nice_interval(start=ymin, stop=ymax, numsteps=levels)
         ax.set_yticks(bounds)
     if support_points is not None:
         print(support_points, support_points.shape)
-        ax.errorbar(support_points[:, 0], support_points[:, 1], support_points[:,2] ** 0.5, fmt='o', alpha=0.7, markersize=8, capsize=6, c='k')
+        ax.errorbar(support_points[:, 0], support_points[:, 1], support_points[:,2] ** 0.5, fmt='o', alpha=0.7,
+                    markersize=8, capsize=6, c='k')
 
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
-    ax.ticklabel_format(scilimits=(-3, 3), useMathText=True)
+    ax.set_yscale(yscale)
+    if yscale == 'linear':
+        ax.ticklabel_format(scilimits=(-3, 3), useMathText=True)
+    if trace_label is not None:
+        ax.legend(loc='best')
 
     plt.tight_layout()
 
@@ -297,12 +302,13 @@ class Gp:
                 except FileNotFoundError:
                     resume = False
             if not resume:
-                columns = ['parameter names', 'position', 'value', 'variance']
+                columns = ['parameter names', 'position', 'value', 'variance', 'mutual information']
                 self.gpCAMstream = pd.DataFrame(columns=columns)
                 self.gpiteration = 0
 
         self.prediction_gpcam = np.zeros(self.steplist)
         self.prediction_var_gpcam = np.zeros(self.steplist)
+        self.mutual_information_gpcam = None
 
     def do_measurement(self, optpars, it_label, entry, q):
         """
@@ -310,7 +316,9 @@ class Gp:
         function providing virtual data is provided
         :param optpars: specific set of parameters for the measurement
         :param it_label: a label for the current iteration
-        :entry (dict) the record without the results that will be deposited in the result queue
+        :param entry: (dict) the record without the results that will be deposited in the result queue
+                      dict keys: 'parameter names' (list(str)), 'position': (list),
+                     'itlabel': (int), 'value': float, 'variance': float
         :param q: (multiprocessing.Queue) the result queue
         :return: (result, variance) measurement result
         """
@@ -367,9 +375,9 @@ class Gp:
         Method to be implemented in each subclass that initializes the measurement hardware.
         :return: (bool) True if successful, False otherwise.
         """
-        print("Initializing GP hardware...")
+        print("Initializing simulated GP hardware...")
         time.sleep(10)
-        print("GP hardware intialized.")
+        print("Simulated GP hardware intialized.")
         return True
 
     def gp_hardware_shutdown(self):
@@ -377,9 +385,9 @@ class Gp:
         Method to be implemented in each subclass that shuts down the measurement hardware.
         :return: (bool) True if successful, False otherwise.
         """
-        print("Shutting down GP hardware...")
+        print("Shutting down simulated GP hardware...")
         time.sleep(10)
-        print("GP hardware shutdown.")
+        print("Simulated GP hardware shutdown.")
         return True
 
     def gpcam_init_ae(self, just_gpcamstream=False):
@@ -454,7 +462,7 @@ class Gp:
             # This is replacing the point that was previously preset with predicted value
             self.gpCAMstream.loc[len(self.gpCAMstream)] = result
             self.gpcam_init_ae(just_gpcamstream=True)
-            self.results_io()
+
             # remove the current task from the in-progress list
             self.measurement_inprogress = [item for item in self.measurement_inprogress
                                            if not np.array_equal(item[1], result['position'])]
@@ -486,7 +494,15 @@ class Gp:
                 else:
                     self.gpcam_train(method='local')
                 self.gpcam_prediction()
+
+                hypars = self.my_ae.get_hyperparameters().tolist()
+                hycols = ['hy'+str(i) for i in range(len(hypars))]
+                for i, col in enumerate(hycols):
+                    self.gpCAMstream.at[self.gpCAMstream.index[-1], col] = hypars[i]
+                self.gpCAMstream.at[self.gpCAMstream.index[-1], 'mutual information'] = self.mutual_information_gpcam
                 self.gpcam_plot()
+
+            self.results_io()
             return
 
         # Using the gpCAM global optimizer
@@ -594,14 +610,16 @@ class Gp:
             if support_points.dtype == object:
                 support_points = np.stack(support_points)
                 vv = self.gpCAMstream[['value', 'variance']].to_numpy()
-                support_points = np.concatenate((support_points, self.gpCAMstream[['value', 'variance']].to_numpy()), axis=-1)
+                support_points = np.concatenate((support_points,
+                                                 self.gpCAMstream[['value', 'variance']].to_numpy()), axis=-1)
         else:
             support_points = None
 
         if len(self.axes) > 1:
             interp = LinearNDInterpolator(self.gp_discrete_points, self.prediction_gpcam)
         else:
-            interp = interp1d(np.array(self.gp_discrete_points).squeeze(), self.prediction_gpcam, fill_value=np.nan, bounds_error=False, kind='linear')
+            interp = interp1d(np.array(self.gp_discrete_points).squeeze(), self.prediction_gpcam, fill_value=np.nan,
+                              bounds_error=False, kind='linear')
 
         mesh = np.meshgrid(*self.axes, indexing='ij')
         stacked = np.stack(mesh, axis=-1)
@@ -610,6 +628,20 @@ class Gp:
         self.results_plot(interp(plot_positions).reshape(self.steplist),
                           filename=path.join(path1, 'prediction_gpcam'), mark_maximum=True,
                           support_points=support_points)
+
+        # plot mutual information and hyperparameters
+        hypar_cols = [col for col in self.gpCAMstream.columns if col.startswith('hy')]
+        if 'mutual information' in self.gpCAMstream.columns:
+            hypar_cols = ['mutual information'] + hypar_cols
+
+        if hypar_cols:
+            filtered = self.gpCAMstream[hypar_cols].copy()
+            filtered.insert(0, 'index', self.gpCAMstream.index)
+            filtered = filtered.dropna()
+            filtered = filtered.to_numpy().T
+            save_plot_1d(filtered[0], filtered[1:], filename=path.join(path1, 'hypars'), xlabel='iteration',
+                         ylabel='information gain / hyperparameter', trace_label=hypar_cols, yscale='symlog')
+
 
     def gpcam_prediction(self):
         """
@@ -627,6 +659,11 @@ class Gp:
         # prediction_positions = np.array(stacked.reshape(-1, len(self.axes)), dtype=np.float32)
         prediction_positions = np.array(self.gp_discrete_points, dtype=np.float32)
 
+        # TODO: Implement sparse prediction, which requires also to provide the sparse input vector to the plotting
+        n = prediction_positions.shape[0]
+        # sample_size = min(n, max_samplesize)
+        # prediction_positions = prediction_positions[np.random.choice(n, sample_size, replace=False)]
+
         self.prediction_gpcam = self.my_ae.posterior_mean(prediction_positions)["f(x)"]
         # self.prediction_gpcam = mean.reshape(self.steplist)
 
@@ -636,6 +673,11 @@ class Gp:
 
         self.prediction_var_gpcam = self.my_ae.posterior_covariance(prediction_positions, variance_only=True, add_noise=False)["v(x)"]
         # self.prediction_var_gpcam = var.reshape(self.steplist)
+
+        sample_size = min(n, 500)
+        prediction_positions = prediction_positions[np.random.choice(n, sample_size, replace=False)]
+        mutual_information = self.my_ae.gp_mutual_information(prediction_positions)['mutual information']
+        self.mutual_information_gpcam = float(mutual_information)
 
     def gpcam_save_discrete_evaluation_points(self):
         if self.gp_discrete_points is None:
@@ -928,7 +970,7 @@ class Gp:
         try:
             q = self.measurement_results_queue
             entry = {'parameter names': self.exp_par['name'].to_list(), 'position': current_task_data[1],
-                     'value': None, 'variance': None}
+                     'itlabel': itlabel, 'value': None, 'variance': None}
             p = Thread(
                 target=self.do_measurement,
                 args=(optpars, itlabel, entry, q)
