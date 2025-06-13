@@ -344,7 +344,7 @@ with (st.expander('Monitor')):
     monitor()
 
 st.write("""
-# Setup Phase Space Exploration
+# Setup
 """)
 
 with st.expander('Setup'):
@@ -385,7 +385,7 @@ with st.expander('Setup'):
     parameter_input()
 
 st.write("""
-# Run or Continue Optimization
+# Run Control
 """)
 
 res_path_gpcam = os.path.join(st.session_state['user_qcmd_opt_dir'], 'results', 'gpCAMstream.pkl')
