@@ -1,7 +1,7 @@
 from contextlib import closing
 from flask import Flask
 from flask import abort, request
-from multiprocessing import Process, Manager
+from pse.gp import Gp as GpParent
 from threading import Thread
 import os
 import socket
@@ -13,7 +13,11 @@ class GpServer:
         self.gpo = None
         self.port = None
         self.p = None
-        self.task_dict = {}
+        self.task_dict = {
+            'progress': "0%",
+            'cancelled': True,
+            'paused': False,
+        }
         self.app = Flask(__name__)
         # add routes
         self.add_routes()
@@ -25,6 +29,16 @@ class GpServer:
         self.app.add_url_rule('/pause_pse', view_func=self.pause_pse, methods=['GET'])
         self.app.add_url_rule('/start_pse', view_func=self.start_pse, methods=['POST'])
         self.app.add_url_rule('/stop_pse', view_func=self.stop_pse, methods=['GET'])
+
+    def check_post(self):
+        if request.method != 'POST':
+            abort(400, description='Request method is not POST.')
+        data = request.get_json()
+        if data is None or not isinstance(data, dict):
+            abort(400, description='No valid data received.')
+        if self.p is not None:
+            abort(400, description='Another PSE optimization is already running.')
+        return data
 
     def default(self):
         print("Serving on port {}".format(self.port))
@@ -38,21 +52,23 @@ class GpServer:
 
     def pause_pse(self):
         if self.task_dict:
-            self.task_dict["cancelled"] = True
             self.task_dict['paused'] = True
         if self.p is not None:
             self.p.join()
-            self.gpo = None
+            # keep the gpo alive
+            # self.gpo = None
             self.p = None
         return "PSE paused"
 
     def resume_pse(self):
-        if self.task_dict and self.task_dict['paused']:
-            self.task_dict["cancelled"] = False
-            # call start PSE function as functionally a restart from Pause is only different in that the hardware
-            # is not being reiniatialized, which will be decided based on inside gp.py the 'paused' flag in the
-            # task_dict
-            self.start_pse()
+        data = self.check_post()
+        if self.task_dict['paused']:
+            self.task_dict['paused'] = False
+            if not self.task_dict['cancelled']:
+                # call start PSE function as functionally a restart from Pause is only different in that the hardware
+                # is not being reiniatialized, which will be decided based on inside gp.py the 'paused' flag in the
+                # task_dict
+                self.pse_go(data, from_pause=True)
             return "PSE resumed"
         else:
             return "PSE was not paused."
@@ -73,41 +89,49 @@ class GpServer:
         The POST data must dictioinary must contain the keyword arguments passed to gp init
         :return: status message.
         """
+        data = self.check_post()
+        if not self.task_dict['cancelled']:
+            return "PSE was already running."
+        self.task_dict['cancelled'] = False
+        self.pse_go(data, from_pause=False)
+        return "PSE started"
 
-        if request.method != 'POST':
-            abort(400, description='Request method is not POST.')
-
-        data = request.get_json()
-        if data is None or not isinstance(data, dict):
-            abort(400, description='No valid data received.')
-
-        if self.p is not None:
-            abort(400, description='Another gp instance is already running.')
-
+    def pse_go(self, data, from_pause=False):
         if 'client' in data:
             if data['client'] == 'ROADMAP':
-                from pse.roadmap import ROADMAP_Gp as gpobject
+                from pse.roadmap import ROADMAP_Gp as GpObject
             elif data['client'] == 'Test Ackley Function':
-                from pse.gp import Gp as gpobject
+                from pse.gp import Gp as GpObject
             del data['client']
         else:
-            from pse.roadmap import ROADMAP_Gp as gpobject
+            from pse.roadmap import ROADMAP_Gp as GpObject
 
-        self.gpo = gpobject(**data)
+        if from_pause:
+            # just reinitialize the object with updated arguments, keep inits from children untouched
+            GpParent.__init__(self.gpo, **data)
+        else:
+            self.gpo = GpObject(**data)
+
         self.task_dict["progress"] = "0%"
-        self.task_dict["cancelled"] = False
-        self.p = Thread(target=self.gpo.run, args=(self.task_dict, ))
+        self.p = Thread(target=self.gpo.run, args=(self.task_dict, from_pause))
         self.p.start()
 
         return "PSE started"
 
     def stop_pse(self):
-        if self.task_dict:
-            self.task_dict["cancelled"] = True
+        if self.task_dict['cancelled']:
+            return "PSE was already stopped."
+        self.task_dict["cancelled"] = True
         if self.p is not None:
             self.p.join()
             self.gpo = None
             self.p = None
+        else:
+            # PSE not cancelled, but process not alive -> gp is in pause
+            # shut down hardware
+            if self.gpo is not None:
+                self.gpo.gp_hardware_shutdown()
+                self.gpo = None
         return "PSE stopped"
 
 
