@@ -453,6 +453,10 @@ class Gp:
         self.gp_discrete_points = [self.gp_discrete_points[i] for i in range(self.gp_discrete_points.shape[0])]
 
     def gpcam_optimization_loop(self):
+        """
+        The GP main optimization loop
+        :return: (bool) True if all iterations finished, False otherwise.
+        """
         def collect_measurement(gpcam_initialized=False):
             result = self.measurement_results_queue.get()
             x = np.array([result['position']])
@@ -506,15 +510,13 @@ class Gp:
             self.iterations_inprogress_save_to_file()
             return
 
-        # Rerun variable for the entire loop
-        rerun = False
-
         # Using the gpCAM global optimizer
         self.gpcam_init_ae()
 
         # save and evaluate initial data set if it has been freshly calculate
         print('Checking if sufficient initial measurements.')
-        while self.gpiteration < self.gpcam_init_dataset_size and not self.task_dict.get("cancelled", False):
+        while (self.gpiteration < self.gpcam_init_dataset_size and not self.task_dict['cancelled'] and
+               not self.task_dict['paused']):
             if not self.measurement_results_queue.empty():
                 collect_measurement(gpcam_initialized=False)
             elif len(self.measurement_inprogress) < self.parallel_measurements:
@@ -541,7 +543,7 @@ class Gp:
 
         printed = False
         while (len(self.measurement_inprogress) == self.gpcam_init_dataset_size and
-               not self.task_dict.get("cancelled", False)):
+               not self.task_dict['cancelled'] and not self.task_dict['paused']):
             if not printed:
                 print('Waiting for at least one measurement to finish.')
                 printed = True
@@ -556,7 +558,7 @@ class Gp:
         # self.gpcam_plot()
 
         while (len(self.gpCAMstream['position'].to_numpy()) < self.gpcam_iterations
-               and not self.task_dict.get("cancelled", False)):
+               and not self.task_dict["cancelled"] and not self.task_dict["paused"]):
             # print('gpCAM main loop with abortion signal {}'.format(self.task_dict.get("cancelled", False)))
             # print("length of the dataset: ", len(self.my_ae.x_data))
 
@@ -600,14 +602,8 @@ class Gp:
                 # nothing to do
                 time.sleep(5)
 
-        if self.task_dict.get("paused", False):
-            was_paused = True
-        else:
-            was_paused = False
-
         printed = False
-        while self.measurement_inprogress and (not self.task_dict.get("cancelled", False) or
-                                               self.task_dict.get("paused", False)):
+        while self.measurement_inprogress and not self.task_dict["cancelled"] and self.task_dict["paused"]:
             if not printed:
                 print('Paused. Waiting for remaining measurements to finish. Stop PSE to abort.')
                 printed = True
@@ -622,12 +618,7 @@ class Gp:
             # delete iterations in progress log file
             self.iterations_inprogress_delete_file()
 
-        if not self.task_dict.get("paused", False) and was_paused:
-            # unpaused during pending pause!
-            # signal a restart of the function from the calling method
-            rerun = True
-
-        return rerun
+        return len(self.gpCAMstream['position'].to_numpy()) == self.gpcam_iterations
 
     def gpcam_plot(self):
         path1 = path.join(self.spath, 'plots')
@@ -770,7 +761,8 @@ class Gp:
         # the complicated iteration syntax is due the unknown dimensionality of the results space / arrays
         it = np.nditer(self.results, flags=['multi_index'])
 
-        while not it.finished and not self.measurement_aborted:
+        while (not it.finished and not self.measurement_aborted and not self.task_dict['cancelled'] and
+               not self.task_dict['paused']):
             # first collect any finished measurements
             if not self.measurement_results_queue.empty():
                 collect_measurement()
@@ -796,6 +788,24 @@ class Gp:
                 time.sleep(5)
 
         return bWorkedOnIndex
+
+    def gridsearch_optimization_loop(self):
+        # Grid search
+        # every index has at least one result before re-analyzing any data point (refinement)
+        bRefinement = False
+        opt_finished = False
+        while (True and not self.task_dict['paused'] and not self.task_dict['cancelled'] and
+               not self.measurement_aborted):
+            bWorkedOnAnyIndex = self.gridsearch_iterate_over_all_indices(bRefinement)
+            if not bWorkedOnAnyIndex:
+                if not bRefinement:
+                    # all indices have the minimum number of iterations -> start refinement
+                    bRefinement = True
+                else:
+                    # done with refinement
+                    opt_finished = True
+                    break
+        return opt_finished
 
     def iterations_inprogress_delete_file(self):
         """
@@ -826,7 +836,7 @@ class Gp:
         with open(path.join(self.spath, 'results', 'current_iterations.pkl'), 'wb') as file:
             pickle.dump(output_df, file)
 
-    def run(self, task_dict):
+    def run(self, task_dict, from_pause=False):
         """
         Runs the PSE algorithm. Parameters are provided in the task_dict dictionary.
         :param task_dict: (dict) A dictionary containing the parameters to be passed to the PSE algorithm.
@@ -841,19 +851,22 @@ class Gp:
         if 'paused' not in self.task_dict:
             self.task_dict['paused'] = False
 
-        if not self.task_dict['paused']:
+        if not from_pause:
             # only intialize hardware if PSE was not paused before since hardware would already be initialized
             if not self.gp_hardware_intitialzation():
                 self.task_dict['status'] = 'failure - could not initialize hardware'
                 return False
-        self.task_dict['paused'] = False
-        self.task_dict['status'] = 'running'
 
-        if self.optimizer == 'grid':
-            self.run_optimization_grid()
-        elif self.optimizer == 'gpcam':
-            while self.gpcam_optimization_loop():
-                pass
+        self.task_dict['status'] = 'running'
+        while True:
+            if self.optimizer == 'grid':
+                opt_finished = self.gridsearch_optimization_loop()
+            elif self.optimizer == 'gpcam':
+                opt_finished = self.gpcam_optimization_loop()
+
+            # test for edge case: user must have unpaused or unstopped before loop finished, continue optimization
+            if self.task_dict['paused'] or self.task_dict['cancelled'] or opt_finished or self.measurement_aborted:
+                break
 
         if self.measurement_aborted:
             if self.task_dict['status'] == 'failure':
@@ -868,20 +881,6 @@ class Gp:
 
         self.task_dict['status'] = 'idle'
         return True
-
-    def run_optimization_grid(self):
-        # Grid search
-        # every index has at least one result before re-analyzing any data point (refinement)
-        bRefinement = False
-        while True:
-            bWorkedOnAnyIndex = self.gridsearch_iterate_over_all_indices(bRefinement)
-            if not bWorkedOnAnyIndex:
-                if not bRefinement:
-                    # all indices have the minimum number of iterations -> start refinement
-                    bRefinement = True
-                else:
-                    # done with refinement
-                    break
 
     def results_io(self, load=False):
         if self.optimizer == 'grid':
