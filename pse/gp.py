@@ -72,7 +72,8 @@ def pack(data):
 
 
 def save_plot_1d(x, y, dy=None, xlabel='', ylabel='', color=None, filename="plot", ymin=None, ymax=None, levels=5,
-                 niceticks=False, keep_plots=False, support_points=None, trace_label=None, yscale='linear',):
+                 niceticks=False, keep_plots=False, support_points=None, trace_label=None, yscale='linear',
+                 legend_loc='best'):
     import matplotlib.pyplot as plt
     import matplotlib
 
@@ -103,7 +104,7 @@ def save_plot_1d(x, y, dy=None, xlabel='', ylabel='', color=None, filename="plot
     if yscale == 'linear':
         ax.ticklabel_format(scilimits=(-3, 3), useMathText=True)
     if trace_label is not None:
-        ax.legend(loc='best')
+        ax.legend(loc=legend_loc)
 
     plt.tight_layout()
 
@@ -302,7 +303,7 @@ class Gp:
                 except FileNotFoundError:
                     resume = False
             if not resume:
-                columns = ['parameter names', 'position', 'value', 'variance', 'mutual information']
+                columns = ['parameter names', 'position', 'value', 'variance', 'mutual information', 'itlabel']
                 self.gpCAMstream = pd.DataFrame(columns=columns)
                 self.gpiteration = 0
 
@@ -459,7 +460,6 @@ class Gp:
             v = np.array([result['variance']])
             print('Colected measurement results x, y, v: {}, {}, {}'.format(x, y, v))
             print('\n')
-            # This is replacing the point that was previously preset with predicted value
             self.gpCAMstream.loc[len(self.gpCAMstream)] = result
             self.gpcam_init_ae(just_gpcamstream=True)
 
@@ -616,7 +616,7 @@ class Gp:
             else:
                 print('Still waiting for remaining measurements to finish.')
                 print(self.measurement_inprogress)
-                time.sleep(5)
+                time.sleep(60)
 
         if not self.measurement_inprogress:
             # delete iterations in progress log file
@@ -670,7 +670,8 @@ class Gp:
             filtered = filtered.dropna()
             filtered = filtered.to_numpy().T
             save_plot_1d(filtered[0], filtered[1:], filename=path.join(path1, 'hypars'), xlabel='iteration',
-                         ylabel='information gain / hyperparameter', trace_label=hypar_cols, yscale='symlog')
+                         ylabel='information gain / hyperparameter', trace_label=hypar_cols, yscale='symlog',
+                         legend_loc='upper left')
 
     def gpcam_prediction(self):
         """
@@ -980,15 +981,12 @@ class Gp:
         :param itlabel: (any) some iteration label to identify the current iteration
         :return: (float, float) result and variance of the performed measurement
         """
-        current_task_data = (None, position, itlabel)
-        self.measurement_inprogress.append(current_task_data)
-        self.iterations_inprogress_save_to_file()
-
-        print(self.task_dict)
         if self.task_dict['cancelled']:
             self.task_dict['status'] = 'stopping'
             self.measurement_aborted = True
             return None, None
+
+        current_task_data = (None, position, itlabel)
 
         optpars = {}
         # cycle through all parameters
@@ -1006,11 +1004,12 @@ class Gp:
                 args=(optpars, itlabel, entry, q)
             )
             p.start()
+            self.measurement_inprogress.append(current_task_data)
+            self.iterations_inprogress_save_to_file()
         except RuntimeError as e:
             print('Measurement failed outside of GP {}'.format(e))
             self.task_dict['status'] = 'failure'
             self.measurement_aborted = True
-            self.measurement_inprogress.remove(current_task_data)
 
         return
 
