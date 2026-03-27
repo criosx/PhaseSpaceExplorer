@@ -3,7 +3,6 @@ from os import path, mkdir
 import json
 import math
 import matplotlib.pyplot as plt
-#from multiprocessing import Process, Queue
 from threading import Thread
 from queue import Queue
 import numpy as np
