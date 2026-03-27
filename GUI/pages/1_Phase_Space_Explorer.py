@@ -23,7 +23,7 @@ if 'jobs_status' not in st.session_state:
     # instruments initialized - PSE ready to go
     # running - PSE running
     # paused - PSE paused
-    
+
     # pending PSE startup -
     # pending PSE shutdown -
     # pending PSE pause -
