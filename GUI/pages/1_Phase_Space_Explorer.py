@@ -163,7 +163,7 @@ def monitor():
             with open(res_path_gpcam, 'rb') as file:
                 df_res_gpcam = pandas.DataFrame(pickle.load(file))
             st.text("Finished measurements:")
-            st.dataframe(df_res_gpcam, hide_index=False, use_container_width=True)
+            st.dataframe(df_res_gpcam, hide_index=False, width='stretch')
 
             if st.session_state['jobs_status'] == 'running':
                 if df_res_gpcam.shape[0] >= st.session_state['gp_iterations']:
@@ -204,7 +204,7 @@ def monitor():
             df_res_grid = pandas.DataFrame(index_combinations, columns=[name_pars[i] for i in range(res_grid.ndim)])
             df_res_grid["result"] = values
             st.text("Measurement Results:")
-            st.dataframe(df_res_grid, hide_index=False, use_container_width=True)
+            st.dataframe(df_res_grid, hide_index=False, width='stretch')
 
         else:
             st.text("No results to show.")
@@ -220,7 +220,7 @@ def monitor():
 
     for file in png_files:
         try:
-            st.image(file, use_container_width=True)
+            st.image(file, width='stretch')
         except FileNotFoundError:
             pass
 
@@ -298,6 +298,10 @@ def start_stop_optimization():
     port = st.session_state['gp_server_port']
     jstatus = st.session_state['jobs_status']
 
+    if not any(st.session_state['opt_pars']['optimize']):
+        st.warning("Please, select at least on parameter to optimize before starting PSE.")
+        st.stop()
+
     rpse = col_opt_5.toggle('Run PSE', on_change=adjust_PSE_status)
     ppse = col_opt_6.toggle('Pause PSE', disabled=(not rpse), on_change=adjust_PSE_status)
 
@@ -370,7 +374,7 @@ with st.expander('Setup'):
         st.info("Active project: {}".format(st.session_state['active_project']))
 
         if st.button('Clear Project Data', disabled=(st.session_state['jobs_status'] == 'running'),
-                     use_container_width=True):
+                     width='stretch'):
             clear_project_data()
 
     else:

@@ -6,17 +6,10 @@
       <excludeFolder url="file://$MODULE_DIR$/dist" />
       <excludeFolder url="file://$MODULE_DIR$/pse.egg-info" />
     </content>
-    <orderEntry type="jdk" jdkName="phasespace" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="$USER_HOME$/miniforge3/envs/phasespace" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
   <component name="PackageRequirementsSettings">
     <option name="versionSpecifier" value="Don't specify version" />
-  </component>
-  <component name="PyNamespacePackagesService">
-    <option name="namespacePackageFolders">
-      <list>
-        <option value="$MODULE_DIR$/pse" />
-      </list>
-    </option>
   </component>
 </module>

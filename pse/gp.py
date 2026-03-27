@@ -11,6 +11,7 @@ from scipy.interpolate import LinearNDInterpolator, interp1d
 import os.path
 import pickle
 import pandas as pd
+from scipy.interpolate import NearestNDInterpolator
 import time
 
 
@@ -433,9 +434,9 @@ class Gp:
 
         if len(x) >= 1:
             # use any previously computed results
-            x = np.array(x)
-            y = np.array(y)
-            v = np.array(v)
+            x = np.atleast_1d(x)
+            y = np.atleast_1d(y)
+            v = np.atleast_1d(v)
             self.gpiteration = len(x)
             # tell the optimizer the data that was already collected
             self.my_ae.tell(x, y, v, append=False)
@@ -485,10 +486,10 @@ class Gp:
                 # retell the gpCAM optimizer the measuremnts in progress
                 if self.measurement_inprogress:
                     meas_points = [point[1] for point in self.measurement_inprogress]
-                    meas_points = np.array(meas_points)
-                    pred_mean = self.my_ae.posterior_mean(meas_points)["f(x)"]
+                    meas_points = np.atleast_1d(meas_points)
+                    pred_mean = np.atleast_1d(self.my_ae.posterior_mean(meas_points)["m(x)"])
                     # pred_var = self.my_ae.posterior_covariance(pred_points, variance_only=True)["v(x)"]
-                    pred_var = np.array([self.signal_estimate * 1e-7] * meas_points.shape[0])
+                    pred_var = np.atleast_1d([self.signal_estimate * 1e-7] * meas_points.shape[0])
                     self.my_ae.tell(meas_points, pred_mean, pred_var, append=True)
 
                 # train
@@ -591,9 +592,9 @@ class Gp:
                     # will be later replaced
                     next_point = np.array(next_points['x'][0])
                     pred_points = next_point.reshape(1, -1)
-                    pred_mean = self.my_ae.posterior_mean(pred_points)["f(x)"]
+                    pred_mean = np.atleast_1d(self.my_ae.posterior_mean(pred_points)["m(x)"])
                     # pred_var = self.my_ae.posterior_covariance(pred_points, variance_only=True)["v(x)"]
-                    pred_var = np.array([self.signal_estimate * 1e-7])
+                    pred_var = np.atleast_1d([self.signal_estimate * 1e-7])
                     self.my_ae.tell(pred_points, pred_mean, pred_var, append=True)
                     self.gpcam_train(method='local')
                     if submit_counter == n:
@@ -664,12 +665,44 @@ class Gp:
                          ylabel='information gain / hyperparameter', trace_label=hypar_cols, yscale='symlog',
                          legend_loc='upper left')
 
-    def gpcam_prediction(self):
+    def gpcam_prediction(self, max_samplesize=500):
         """
         Creates a gp model prediction on all input points defined by the axes and steps of the optimization
         problem defined during object intialization.
+        :param max_samplesize: maximum number of evaluation points for the variance and mutual information
         :return: no return value
         """
+
+        def scale_up(dsgrid, dsvalues, usgrid):
+            """
+            Interpolates a (downscaled) discreate grid of values onto a denser (upscaled) grid
+            :param dsgrid: (np array) the discrete set of downscaled grid positions
+            :param dsvalues: (np array) the discrete set of downscaled grid values
+            :param usgrid:  (np array) the upscaled grid positions
+            :return: (np array) the upscaled grid values
+            """
+
+            if dsgrid.ndim == 1:
+                # one-dimensional grid
+                x = dsgrid.reshape(-1)
+                order = np.argsort(x)
+                x = x[order]
+                y = np.asarray(dsvalues)[order]
+                interp_var = interp1d(x, y, bounds_error=False, fill_value="extrapolate", kind="linear")
+                usvalues = interp_var(usgrid.reshape(-1))
+            else:
+                # multi-dimenstional grid
+                interp_var = LinearNDInterpolator(dsgrid, dsvalues, fill_value=np.nan)
+                usvalues = interp_var(usgrid)
+
+            # replace and nan for grid positions outside the convex hull defined by the dsgrid points with nearest
+            # neighbor interpolation
+            if np.isnan(usvalues).any():
+                nn_interp = NearestNDInterpolator(dsgrid, dsvalues)
+                nan_mask = np.isnan(usvalues)
+                usvalues[nan_mask] = nn_interp(usgrid[nan_mask])
+
+            return usvalues
 
         # Only use discrete points for prediction and plotting.
         # TODO: In case we want to allow defining the parameter space by boundaries, use the the commented out code
@@ -680,24 +713,23 @@ class Gp:
         # prediction_positions = np.array(stacked.reshape(-1, len(self.axes)), dtype=np.float32)
         prediction_positions = np.array(self.gp_discrete_points, dtype=np.float32)
 
-        # TODO: Implement sparse prediction, which requires also to provide the sparse input vector to the plotting
+        # Use sparse prediction points for variance and mutual information
         n = prediction_positions.shape[0]
-        # sample_size = min(n, max_samplesize)
-        # prediction_positions = prediction_positions[np.random.choice(n, sample_size, replace=False)]
+        sample_size = min(n, max_samplesize)
+        idx = np.random.choice(n, sample_size, replace=False)
+        sparse_positions = prediction_positions[idx]
 
-        self.prediction_gpcam = self.my_ae.posterior_mean(prediction_positions)["f(x)"]
+        self.prediction_gpcam = self.my_ae.posterior_mean(prediction_positions)["m(x)"]
         # self.prediction_gpcam = mean.reshape(self.steplist)
 
-        # TODO: Variance becomes expensive to calculate above 2 dimensions. Need to investigate. If currently
-        #   too many points used, it will freeze up all threads, including the gp server. This also means we should
-        #   probably return to using Processes instead of threads.
-
-        self.prediction_var_gpcam = self.my_ae.posterior_covariance(prediction_positions, variance_only=True, add_noise=False)["v(x)"]
+        # Variance is expensive to calculate above 2 dimensions and for many points. Use sparse samples
+        self.prediction_var_gpcam = self.my_ae.posterior_covariance(sparse_positions, variance_only=True,
+                                                                    add_noise=False)["v(x)"]
+        # scale back up to original prediction point density
+        self.prediction_var_gpcam = scale_up(sparse_positions, self.prediction_var_gpcam, prediction_positions)
         # self.prediction_var_gpcam = var.reshape(self.steplist)
 
-        sample_size = min(n, 500)
-        prediction_positions = prediction_positions[np.random.choice(n, sample_size, replace=False)]
-        mutual_information = self.my_ae.gp_mutual_information(prediction_positions)['mutual information']
+        mutual_information = self.my_ae.gp_mutual_information(sparse_positions)['mutual information']
         self.mutual_information_gpcam = float(mutual_information)
 
     def gpcam_save_discrete_evaluation_points(self):

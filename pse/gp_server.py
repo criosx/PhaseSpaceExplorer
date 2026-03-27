@@ -3,7 +3,6 @@ from flask import Flask
 from flask import abort, request
 from pse.gp import Gp as GpParent
 from threading import Thread
-import os
 import socket
 import sys
 
@@ -48,7 +47,7 @@ class GpServer:
         if "status" in self.task_dict:
             return self.task_dict["status"]
         else:
-            return "down"
+            return "no status to report"
 
     def pause_pse(self):
         if self.task_dict:
