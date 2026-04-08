@@ -35,8 +35,12 @@ class GpServer:
         data = request.get_json()
         if data is None or not isinstance(data, dict):
             abort(400, description='No valid data received.')
-        if self.p is not None:
+        if self.p is not None and self.p.is_alive():
             abort(400, description='Another PSE optimization is already running.')
+        if self.p is not None and not self.p.is_alive():
+            # clean up finished threads
+            self.p.join(timeout=0)
+            self.p = None
         return data
 
     def default(self):
@@ -88,9 +92,8 @@ class GpServer:
         The POST data must dictioinary must contain the keyword arguments passed to gp init
         :return: status message.
         """
+        # only start if no other thread is running
         data = self.check_post()
-        if not self.task_dict['cancelled']:
-            return "PSE was already running."
         self.task_dict['cancelled'] = False
         self.pse_go(data, from_pause=False)
         return "PSE started"
@@ -121,7 +124,7 @@ class GpServer:
         if self.task_dict['cancelled']:
             return "PSE was already stopped."
         self.task_dict["cancelled"] = True
-        if self.p is not None:
+        if self.p is not None and self.p.is_alive():
             self.p.join()
             self.gpo = None
             self.p = None

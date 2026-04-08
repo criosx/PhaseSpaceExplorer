@@ -2,6 +2,7 @@ import copy
 import json
 import numpy as np
 import os
+from pathlib import Path
 import pandas
 import pickle
 import shutil
@@ -10,6 +11,11 @@ import sys
 import uuid
 
 from pse import app_functions
+from pse import configuration
+
+if not st.session_state["data_folders_ready"]:
+    st.info("Files and Folders not set up. Please visit the File System tab.")
+    st.stop()
 
 sys.path.append(st.session_state['app_functions_dir'])
 
@@ -41,8 +47,13 @@ if 'measurement_process' not in st.session_state:
 
 # ------------ Functionality -----------
 def adjust_PSE_status():
+    """
+    Aligns the Streamlit knowledge of the server status in st.session_state['jobs_status'] with the reality obtained
+    from a server get_status call.
+    :return: (bool) whether to rerun the global Streamlit script
+    """
     if st.session_state['gp_server_port'] is None:
-        return
+        return False
 
     port = st.session_state['gp_server_port']
     status = app_functions.communicate_get('/get_status', port).text
@@ -50,11 +61,25 @@ def adjust_PSE_status():
 
     if 'failure' in status:
         st.session_state['jobs_status'] = jstatus
-        return
+        return False
+
+    rerun_flag = False
 
     if jstatus == 'pending PSE startup' or jstatus == 'pending PSE resume':
         if status == 'running':
             st.session_state['jobs_status'] = 'running'
+        elif status == 'idle':
+            # Wait in case startup was just initialized and check for status again. Testing this case is needed, if exit
+            # condition is already met at startup (sufficient iterations measured). In this case, the status will not
+            # change to 'running'.
+            st.session_state['update_counter'] += 1
+            if st.session_state['update_counter'] > 1:
+                st.session_state['jobs_status'] = 'idle'
+                # reset optimization start/pause toggles
+                st.session_state['rpse_key'] = str(uuid.uuid4())
+                st.session_state['ppse_key'] = str(uuid.uuid4())
+                st.session_state['update_counter'] = 0
+                rerun_flag = True
 
     elif jstatus == 'pending PSE pause':
         if status == 'idle':
@@ -64,20 +89,18 @@ def adjust_PSE_status():
         if status == 'idle':
             st.session_state['jobs_status'] = 'idle'
 
-    # catches reruns of Stremlit scripts while the server continues in the background
+    # catches reruns of Streamlit scripts while the server continues in the background
     elif jstatus == 'idle' and status == 'running':
         st.session_state['jobs_status'] = 'running'
 
-    return
+    elif jstatus == 'running' and status == 'idle':
+        st.session_state['jobs_status'] = 'idle'
+        # reset optimization start/pause toggles
+        st.session_state['rpse_key'] = str(uuid.uuid4())
+        st.session_state['ppse_key'] = str(uuid.uuid4())
+        rerun_flag = True
 
-
-def activate_project(project_name):
-    print('activating ...')
-    project_dir = os.path.join(st.session_state['streamlit_dir'], project_name, 'phase_space')
-    st.session_state['user_qcmd_opt_dir'] = project_dir
-    st.session_state['active_project'] = project_name
-    print('trying to load from {}'.format(project_dir))
-    load_session_state(project_dir)
+    return rerun_flag
 
 
 def clear_project_data():
@@ -96,35 +119,13 @@ def clear_project_data():
             except Exception as e:
                 print(f"Failed to delete {entry.path}: {e}")
 
-    project_dir = st.session_state['user_qcmd_opt_dir']
+    project_dir = st.session_state['pse_dir']
     if project_dir is None:
         return
     result_dir = os.path.join(project_dir, 'results')
     plots_dir = os.path.join(project_dir, 'plots')
     _rmdir(result_dir)
     _rmdir(plots_dir)
-
-
-def create_new_project(project_name):
-    project_dir1 = str(os.path.join(st.session_state['streamlit_dir'], project_name))
-    os.mkdir(project_dir1)
-    project_dir = os.path.join(project_dir1, 'phase_space')
-    os.mkdir(project_dir)
-    result_dir = os.path.join(project_dir, 'results')
-    os.mkdir(result_dir)
-    plots_dir = os.path.join(project_dir, 'plots')
-    os.mkdir(plots_dir)
-
-    # TODO implement parameter data frame initializion
-    df_opt_pars = {'name': ['lipid1', 'lipid2', 'lipid3', 'lipid concentration'],
-                   'type': ['compound', 'compound', 'compound', 'parameter'], 'value': [1.0, 1.0, 1.0, 5.0],
-                   'lower_opt': 0.0, 'upper_opt': 1.0, 'optimize': False, 'step_opt': 0.01}
-    st.session_state['opt_pars_original'] = df_opt_pars
-    st.session_state['opt_pars'] = df_opt_pars
-    st.session_state['active_project'] = project_name
-    st.session_state['user_qcmd_opt_dir'] = project_dir
-
-    save_session_state(project_dir)
 
 
 def load_session_state(folder):
@@ -136,29 +137,46 @@ def load_session_state(folder):
         st.session_state['opt_pars_original'] = st.session_state['opt_pars']
         print('loaded pse_paramters.pkl')
         print(st.session_state['opt_pars_original'])
+    else:
+        # create new session
+        project_dir = Path(st.session_state['pse_dir']).expanduser().resolve()
+        result_dir = project_dir / 'results'
+        result_dir.mkdir(parents=True, exist_ok=True)
+        plots_dir = project_dir / 'plots'
+        plots_dir.mkdir(parents=True, exist_ok=True)
+
+        # TODO implement parameter data frame initializion
+        df_opt_pars = {'name': ['lipid1', 'lipid2', 'lipid3', 'lipid concentration'],
+                       'type': ['compound', 'compound', 'compound', 'parameter'], 'value': [1.0, 1.0, 1.0, 5.0],
+                       'lower_opt': 0.0, 'upper_opt': 1.0, 'optimize': False, 'step_opt': 0.01}
+        st.session_state['opt_pars_original'] = df_opt_pars
+        st.session_state['opt_pars'] = df_opt_pars
+
+        save_session_state(project_dir)
 
 
 @st.fragment(run_every=60)
 def monitor():
     # list jobs status
     st.info('Server port: {}'.format(st.session_state['gp_server_port']))
-    adjust_PSE_status()
+    if adjust_PSE_status():
+        st.rerun()
     st.info('Job status: {}'.format(st.session_state['jobs_status']))
 
     # List to store paths to .png files
     png_files = []
-    if st.session_state['user_qcmd_opt_dir'] is not None:
+    if st.session_state['pse_dir'] is not None:
 
         # List current iterations to be worked on
-        ci_path = os.path.join(st.session_state['user_qcmd_opt_dir'], 'results', 'current_iterations.pkl')
+        ci_path = os.path.join(st.session_state['pse_dir'], 'results', 'current_iterations.pkl')
         if os.path.exists(ci_path):
             with open(ci_path, 'rb') as file:
                 df_ci = pandas.DataFrame(pickle.load(file))
             st.text("Current measurements in progress:")
             st.dataframe(df_ci, hide_index=True)
 
-        res_path_gpcam = os.path.join(st.session_state['user_qcmd_opt_dir'], 'results', 'gpCAMstream.pkl')
-        res_path_grid = os.path.join(st.session_state['user_qcmd_opt_dir'], 'results', 'pse_grid_results.pkl')
+        res_path_gpcam = os.path.join(st.session_state['pse_dir'], 'results', 'gpCAMstream.pkl')
+        res_path_grid = os.path.join(st.session_state['pse_dir'], 'results', 'pse_grid_results.pkl')
         if os.path.exists(res_path_gpcam):
             with open(res_path_gpcam, 'rb') as file:
                 df_res_gpcam = pandas.DataFrame(pickle.load(file))
@@ -209,7 +227,7 @@ def monitor():
         else:
             st.text("No results to show.")
 
-        figure_path = os.path.join(st.session_state['user_qcmd_opt_dir'], 'plots')
+        figure_path = os.path.join(st.session_state['pse_dir'], 'plots')
         # Iterate over all entries in the directory
         for entry in os.listdir(figure_path):
             # Construct full path
@@ -249,35 +267,34 @@ def save_session_state(folder):
 
 @st.fragment
 def parameter_input():
-    if st.session_state['active_project'] is not None:
-        df_opt_pars = copy.deepcopy(st.session_state['opt_pars_original'])
-        parameters_edited = st.data_editor(
-            df_opt_pars,
-            key=st.session_state['widget_key'],
-            disabled=["_index"],
-            num_rows='dynamic',
-            column_order=["name", "type", "value", "optimize", "lower_opt", "upper_opt",
-                          "step_opt"],
-            column_config={
-                'name': 'name',
-                'type': st.column_config.SelectboxColumn(
-                    "type",
-                    help="Variable type",
-                    options=['compound', 'parameter']
-                ),
-                'lower_opt': 'lower opt',
-                'upper_opt': 'upper',
-                'optimize': 'optimize',
-                'step_opt': 'step'
-            }
-        )
-        st.session_state['opt_pars'] = parameters_edited
-        save_session_state(st.session_state['user_qcmd_opt_dir'])
+    df_opt_pars = copy.deepcopy(st.session_state['opt_pars_original'])
+    parameters_edited = st.data_editor(
+        df_opt_pars,
+        key=st.session_state['widget_key'],
+        disabled=["_index"],
+        num_rows='dynamic',
+        column_order=["name", "type", "value", "optimize", "lower_opt", "upper_opt",
+                      "step_opt"],
+        column_config={
+            'name': 'name',
+            'type': st.column_config.SelectboxColumn(
+                "type",
+                help="Variable type",
+                options=['compound', 'parameter']
+            ),
+            'lower_opt': 'lower opt',
+            'upper_opt': 'upper',
+            'optimize': 'optimize',
+            'step_opt': 'step'
+        }
+    )
+    st.session_state['opt_pars'] = parameters_edited
+    save_session_state(st.session_state['pse_dir'])
 
 
 def start_stop_optimization():
     kwargs = {'exp_par': st.session_state['opt_pars'],
-              'storage_path': st.session_state['user_qcmd_opt_dir'],
+              'storage_path': str(st.session_state['pse_dir']),
               'acq_func': opt_acq,
               'client': client,
               'optimizer': opt_optimizer,
@@ -286,11 +303,11 @@ def start_stop_optimization():
               'gpcam_iterations': gp_iter,
               'parallel_measurements': parallel_meas,
               'resume': True,
-              'project_name': st.session_state['active_project']
+              'project_name': st.session_state.cfg.experiment
               }
 
-    save_exists = os.path.isfile(os.path.join(st.session_state['user_qcmd_opt_dir'], 'evaluation_points.json'))
-    reuse_points = st.checkbox('Reuse saved evaluation points', value=False, disabled=(not save_exists))
+    save_exists = os.path.isfile(os.path.join(st.session_state['pse_dir'], 'evaluation_points.json'))
+    reuse_points = st.checkbox('Reuse saved evaluation points', value=True, disabled=(not save_exists))
     if reuse_points:
         kwargs['gp_discrete_points'] = 'default file'
 
@@ -302,8 +319,23 @@ def start_stop_optimization():
         st.warning("Please, select at least on parameter to optimize before starting PSE.")
         st.stop()
 
-    rpse = col_opt_5.toggle('Run PSE', on_change=adjust_PSE_status)
-    ppse = col_opt_6.toggle('Pause PSE', disabled=(not rpse), on_change=adjust_PSE_status)
+    # find presets in case of first run
+    if jstatus == 'running':
+        rpse_first = True
+        ppse_first = False
+    elif jstatus == 'paused':
+        rpse_first = True
+        ppse_first = True
+    else:
+        rpse_first = False
+        ppse_first = False
+
+    # force rerendering of toggle widgets
+    rpse_key = st.session_state['rpse_key']
+    ppse_key = st.session_state['ppse_key']
+
+    rpse = col_opt_5.toggle('Run PSE', value=rpse_first, key=rpse_key)
+    ppse = col_opt_6.toggle('Pause PSE', disabled=(not rpse), value=ppse_first, key=ppse_key)
 
     if jstatus == 'running':
         if not rpse:
@@ -340,6 +372,11 @@ def start_stop_optimization():
 
 
 # ------------  GUI -------------------
+project_dir = st.session_state['pse_dir']
+
+if st.session_state['jobs_status'] == 'idle':
+    load_session_state(project_dir)
+
 st.write("""
 # Job Monitor
 """)
@@ -352,76 +389,55 @@ st.write("""
 """)
 
 with st.expander('Setup'):
-
-    st.write("## File System")
-    project_list = [entry for entry in os.listdir(st.session_state['streamlit_dir'])
-                    if os.path.isdir(os.path.join(st.session_state['streamlit_dir'], entry))]
-
-    project = st.selectbox('Choose Existing Project', project_list, placeholder="Select Project ...")
-    if project is not None:
-        project_dir = os.path.join(st.session_state['streamlit_dir'], project, 'phase_space')
-        if project_dir != st.session_state['user_qcmd_opt_dir']:
-            activate_project(project)
-            st.session_state['widget_key'] = str(uuid.uuid4())
-
-    new_project = st.text_input("... or create a new project directory.", placeholder="Project name ...")
-    if new_project != '' and new_project not in project_list:
-        create_new_project(new_project)
-        st.session_state['widget_key'] = str(uuid.uuid4())
-
-    if st.session_state['user_qcmd_opt_dir'] is not None:
-        st.info("Project directory: {}".format(st.session_state['user_qcmd_opt_dir']))
-        st.info("Active project: {}".format(st.session_state['active_project']))
-
-        if st.button('Clear Project Data', disabled=(st.session_state['jobs_status'] == 'running'),
-                     width='stretch'):
-            clear_project_data()
-
-    else:
-        st.info("No active project")
+    st.info("Project directory: {}".format(st.session_state['pse_dir']))
+    if st.button('Clear Project Data', disabled=(st.session_state['jobs_status'] == 'running'),
+                 width='stretch'):
+        clear_project_data()
 
     st.write("""
     ## Parameters
     ### Model Fit
     """)
-
     # TODO setup dataframe for exploration parameter selection
     parameter_input()
 
 st.write("""
 # Run Control
 """)
-
-res_path_gpcam = os.path.join(st.session_state['user_qcmd_opt_dir'], 'results', 'gpCAMstream.pkl')
-res_path_grid = os.path.join(st.session_state['user_qcmd_opt_dir'], 'results', 'pse_grid_results.pkl')
-if os.path.exists(res_path_gpcam):
-    present_optimizer = 'gpcam'
-elif os.path.exists(res_path_grid):
-    present_optimizer = 'grid'
-else:
-    present_optimizer = None
-
 col_opt_3, col_opt_4 = st.columns([1, 1])
-if present_optimizer is None:
-    opt_optimizer = col_opt_3.selectbox("optimizer", ['gpcam', 'grid', ])
-else:
-    col_opt_3.text("optimizer: {}".format(present_optimizer))
-    opt_optimizer = present_optimizer
 
-opt_acq = 'variance'
-gp_iter = 50
-init_iter = 10
+# optimizer GPCam vs. grid
+opts = ['gpcam', 'grid', ]
+idx = opts.index(st.session_state.cfg.optimizer)
+opt_optimizer = col_opt_3.selectbox(
+    label="optimizer",
+    options=opts ,
+    index=idx,
+    disabled=(st.session_state.jobs_status != 'idle')
+)
+st.session_state.cfg.optimizer = opt_optimizer
+
 if opt_optimizer == 'gpcam':
-    gp_iter = col_opt_3.number_input('GP iterations', min_value=20, value=1000, format='%i', step=100)
-    init_iter = col_opt_3.number_input('Initial Measurments', min_value=1, value=10, format='%i', step=1)
-    opt_acq = col_opt_3.selectbox("GP acquisition function", ['variance', 'ucb', 'lcb', 'maximum', 'minimum',
-                                                              'gradient', 'total correlation', 'expected improvement',
-                                                              'probability of improvement',
-                                                              'relative information entropy',
-                                                              'relative information entropy set',
-                                                              'target probability'])
+    gp_iter = col_opt_3.number_input('GP iterations', min_value=20, value=st.session_state.cfg.gp_iterations,
+                                     format='%i', step=100)
+    init_iter = col_opt_3.number_input('Initial Measurments', min_value=1,
+                                       value=st.session_state.cfg.initial_iterations, format='%i', step=1)
+    opts = ['variance', 'ucb', 'lcb', 'maximum', 'minimum', 'gradient', 'total correlation', 'expected improvement',
+            'probability of improvement', 'relative information entropy', 'relative information entropy set',
+            'target probability']
+    idx = opts.index(st.session_state.cfg.acquisition_function)
+    opt_acq = col_opt_3.selectbox("GP acquisition function", opts , index=idx)
+    st.session_state.cfg.gp_iterations = gp_iter
+    st.session_state.cfg.initial_iterations = init_iter
+    st.session_state.cfg.acquisition_function = opt_acq
 
-client = col_opt_4.selectbox("client", ['ROADMAP', 'Test Ackley Function', ])
-parallel_meas = col_opt_4.number_input('Parallel measurements', min_value=1, value=1, step=1, format='%i')
+opts = ['ROADMAP', 'Test Ackley Function']
+idx = opts.index(st.session_state.cfg.client)
+client = col_opt_4.selectbox("client", opts , index=idx)
+st.session_state.cfg.client = client
+parallel_meas = col_opt_4.number_input('Parallel measurements', min_value=1,
+                                       value=st.session_state.cfg.parallel_measurements, step=1, format='%i')
+st.session_state.cfg.parallel_measurements = parallel_meas
 
+configuration.save_persistent_cfg(st.session_state.cfg)
 start_stop_optimization()

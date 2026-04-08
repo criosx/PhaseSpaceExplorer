@@ -618,7 +618,7 @@ class Gp:
             # delete iterations in progress log file
             self.iterations_inprogress_delete_file()
 
-        return len(self.gpCAMstream['position'].to_numpy()) == self.gpcam_iterations
+        return len(self.gpCAMstream['position'].to_numpy()) >= self.gpcam_iterations
 
     def gpcam_plot(self):
         path1 = path.join(self.spath, 'plots')
@@ -873,11 +873,10 @@ class Gp:
         :param task_dict: (dict) A dictionary containing the parameters to be passed to the PSE algorithm.
         :return: (bool) True if the algorithm ran succesfully, False otherwise.
         """
-
-        if self.optimizer != 'grid' or self.optimizer != 'gpcam':
-            self.task_dict['status'] = 'failure - optimization method not implemented'
-
         self.task_dict = task_dict
+
+        if self.optimizer != 'grid' and self.optimizer != 'gpcam':
+            self.task_dict['status'] = 'failure - optimization method not implemented'
 
         if 'paused' not in self.task_dict:
             self.task_dict['paused'] = False
