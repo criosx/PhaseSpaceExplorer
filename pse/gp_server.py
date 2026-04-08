@@ -1,114 +1,140 @@
 from contextlib import closing
 from flask import Flask
 from flask import abort, request
-# from multiprocessing import Process, Manager
+from pse.gp import Gp as GpParent
 from threading import Thread
-import os
 import socket
 import sys
 
-app = Flask(__name__)
-gpo = None
-port = None
-p = None
-task_dict = {}
 
+class GpServer:
+    def __init__(self):
+        self.gpo = None
+        self.port = None
+        self.p = None
+        self.task_dict = {
+            'progress': "0%",
+            'cancelled': True,
+            'paused': False,
+        }
+        self.app = Flask(__name__)
+        # add routes
+        self.add_routes()
 
-def find_free_port():
-    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
-        s.bind(('', 0))  # Bind to a free port provided by the host.
-        return s.getsockname()[1]  # Return the port number assigned.
+    def add_routes(self):
+        self.app.add_url_rule("/", view_func=self.default, methods=['GET'])
+        self.app.add_url_rule("/get_status", view_func=self.get_status, methods=['GET'])
+        self.app.add_url_rule('/resume_pse', view_func=self.resume_pse, methods=['POST'])
+        self.app.add_url_rule('/pause_pse', view_func=self.pause_pse, methods=['GET'])
+        self.app.add_url_rule('/start_pse', view_func=self.start_pse, methods=['POST'])
+        self.app.add_url_rule('/stop_pse', view_func=self.stop_pse, methods=['GET'])
 
+    def check_post(self):
+        if request.method != 'POST':
+            abort(400, description='Request method is not POST.')
+        data = request.get_json()
+        if data is None or not isinstance(data, dict):
+            abort(400, description='No valid data received.')
+        if self.p is not None and self.p.is_alive():
+            abort(400, description='Another PSE optimization is already running.')
+        if self.p is not None and not self.p.is_alive():
+            # clean up finished threads
+            self.p.join(timeout=0)
+            self.p = None
+        return data
 
-@app.route("/", methods=['GET'])
-def default():
-    global port
-    print("Serving on port {}".format(port))
-    return "Server is running on port {}".format(port)
+    def default(self):
+        print("Serving on port {}".format(self.port))
+        return "Server is running on port {}".format(self.port)
 
+    def get_status(self):
+        if "status" in self.task_dict:
+            return self.task_dict["status"]
+        else:
+            return "no status to report"
 
-@app.route("/get_status", methods=['GET'])
-def get_status():
-    global task_dict
-    if task_dict:
-        return task_dict["status"]
-    else:
-        return "down"
+    def pause_pse(self):
+        if self.task_dict:
+            self.task_dict['paused'] = True
+        if self.p is not None:
+            self.p.join()
+            # keep the gpo alive
+            # self.gpo = None
+            self.p = None
+        return "PSE paused"
 
+    def resume_pse(self):
+        data = self.check_post()
+        if self.task_dict['paused']:
+            self.task_dict['paused'] = False
+            if not self.task_dict['cancelled']:
+                # call start PSE function as functionally a restart from Pause is only different in that the hardware
+                # is not being reiniatialized, which will be decided based on inside gp.py the 'paused' flag in the
+                # task_dict
+                self.pse_go(data, from_pause=True)
+            return "PSE resumed"
+        else:
+            return "PSE was not paused."
 
-def start_server(storage_dir):
-    global app
-    global port
-    global task_dict
+    def run(self, port=None):
+        if port is None:
+            with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+                # Bind to a free port provided by the host.
+                s.bind(('', 0))
+                port = s.getsockname()[1]
+        self.port = port
+        print(f"Starting Phase Space Explorer Flask server on port {self.port}")
+        self.app.run(port=self.port)
 
-    print(f"Using storage directory: {storage_dir} for gp.")
+    def start_pse(self):
+        """
+        POST request function that starts a PSE task.
+        The POST data must dictioinary must contain the keyword arguments passed to gp init
+        :return: status message.
+        """
+        # only start if no other thread is running
+        data = self.check_post()
+        self.task_dict['cancelled'] = False
+        self.pse_go(data, from_pause=False)
+        return "PSE started"
 
-    port = find_free_port()
-    # save port number to file for streamlit to read
-    fp = os.path.join(storage_dir, "service_port.txt")
-    with open(fp, "w") as f:
-        f.write(str(port))
-    print(f"Starting Phase Space Explorer Flask server on port {port}")
-    app.run(port=port)
+    def pse_go(self, data, from_pause=False):
+        if 'client' in data:
+            if data['client'] == 'ROADMAP':
+                from pse.roadmap import ROADMAP_Gp as GpObject
+            elif data['client'] == 'Test Ackley Function':
+                from pse.gp import Gp as GpObject
+            del data['client']
+        else:
+            from pse.roadmap import ROADMAP_Gp as GpObject
 
+        if from_pause:
+            # just reinitialize the object with updated arguments, keep inits from children untouched
+            GpParent.__init__(self.gpo, **data)
+        else:
+            self.gpo = GpObject(**data)
 
-@app.route('/start_pse', methods=['POST'])
-def start_pse():
-    """
-    POST request function that starts a PSE task.
-    The POST data must dictioinary must contain the keyword arguments passed to gp init
-    :return: status message.
-    """
-    global gpo
-    global task_dict
-    global p
+        self.task_dict["progress"] = "0%"
+        self.p = Thread(target=self.gpo.run, args=(self.task_dict, from_pause))
+        self.p.start()
 
-    if request.method != 'POST':
-        abort(400, description='Request method is not POST.')
+        return "PSE started"
 
-    data = request.get_json()
-    if data is None or not isinstance(data, dict):
-        abort(400, description='No valid data received.')
-
-    if p is not None:
-        abort(400, description='Another gp instance is already running.')
-
-    if 'client' in data:
-        if data['client'] == 'ROADMAP':
-            from pse.roadmap import ROADMAP_Gp as gpobject
-        elif data['client'] == 'Test Ackley Function':
-            from pse.gp import Gp as gpobject
-        del data['client']
-    else:
-        from pse.roadmap import ROADMAP_Gp as gpobject
-
-    gpo = gpobject(**data)
-    # manager = Manager()
-    # task_dict = manager.dict()
-    task_dict["status"] = "running"
-    task_dict["progress"] = "0%"
-    task_dict["cancelled"] = False
-    # gp client needs to be a process, otherwise the server will stop responding during computation intensive
-    # tasks in the client.
-    p = Thread(target=gpo.run, args=(task_dict, ))
-    p.start()
-
-    return "PSE started"
-
-
-@app.route('/stop_pse', methods=['GET'])
-def stop_pse():
-    global task_dict
-    global p
-    global gpo
-
-    if task_dict:
-        task_dict["cancelled"] = True
-    if p is not None:
-        p.join()
-        gpo = None
-
-    return "PSE stopped"
+    def stop_pse(self):
+        if self.task_dict['cancelled']:
+            return "PSE was already stopped."
+        self.task_dict["cancelled"] = True
+        if self.p is not None and self.p.is_alive():
+            self.p.join()
+            self.gpo = None
+            self.p = None
+        else:
+            # PSE not cancelled, but process not alive -> gp is in pause
+            # shut down hardware
+            if self.gpo is not None:
+                self.gpo.gp_hardware_shutdown()
+                self.gpo = None
+        return "PSE stopped"
 
 
 if __name__ == "__main__":
@@ -116,5 +142,7 @@ if __name__ == "__main__":
         print("Usage: python gp_server.py <storage_directory>")
         sys.exit(1)
 
-    storage_dir = sys.argv[1]
-    start_server(storage_dir)
+    port = sys.argv[1]
+    gp_server = GpServer()
+    gp_server.run(port)
+    _ = input("Press enter to exit...")

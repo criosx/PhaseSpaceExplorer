@@ -27,7 +27,13 @@ from lh_manager.liquid_handler.roadmapmethods import (ROADMAP_QCMD_MakeBilayer,
                                                       TransferWithRinse,
                                                       MixWithRinse,
                                                       InferredWellLocation,
-                                                      ROADMAP_DirectInjecttoQCMD)
+                                                      ROADMAP_DirectInjecttoQCMD,
+                                                      ROADMAP_DirectInjectPrime)
+from lh_manager.liquid_handler.qcmdmethods import QCMDStop, QCMDStart
+from lh_manager.liquid_handler.lhmethods import Prime
+from lh_manager.liquid_handler.injectionmethods import (PrimeLoop,
+                                                        RinseDirectInjectPrime)
+from lh_manager.liquid_handler.rinsemethods import PrimeRinseLoop
                                                       
 from lh_manager.liquid_handler.samplelist import Sample, MethodList
 
@@ -485,6 +491,50 @@ class ROADMAP_Gp(Gp):
         # set acquisition function
         self.acq_func = acq_variance_target
 
+    def initialize_channel(self, channel: int) -> bool:
+
+        # initialization sample
+        sample = Sample(name=f'{self.project_name} channel {channel} init',
+            description='started ' + datetime.datetime.now().strftime("%Y%m%d %H.%M.%S"),
+            channel=channel,
+            stages={'methods': MethodList()})
+        
+        methods = []
+        # only if channel 0, add liquid handler and rinse system prime methods
+        #if channel == 0:
+        #    methods += [Prime(Volume=3, Repeats=3)]
+
+        # start QCMD and prime individual channels
+        methods += [QCMDStart(Description=f'{self.project_name} channel {channel}'),
+                    PrimeLoop(number_of_primes=2),
+                    RinseDirectInjectPrime(Volume=1, Flow_Rate=3)
+                    ]
+        
+        for method in methods:
+            sample.stages['methods'].add(method)
+
+        sample = self.manager.new_sample(sample=sample)
+        _, sample = self.manager.run_sample(sample.id)
+
+        # do not need to wait for the result
+        return True
+
+    def shutdown_channel(self, channel: int) -> bool:
+
+        # initialization sample
+        sample = Sample(name=f'{self.project_name} channel {channel} shutdown',
+            description='started ' + datetime.datetime.now().strftime("%Y%m%d %H.%M.%S"),
+            channel=channel,
+            stages={'methods': MethodList(methods=[QCMDStop()])})
+        
+        sample = self.manager.new_sample(sample=sample)
+        _, sample = self.manager.run_sample(sample.id)
+
+        # do not need to wait for the result
+        return True
+
+    def gp_hardware_intitialzation(self) -> bool:
+
         # control measurement
         self.controls: dict[str, dict] = self.load_controls()
         self.current_control: list[str] = [None for _ in range(self.n_channels)]
@@ -513,14 +563,34 @@ class ROADMAP_Gp(Gp):
         for name in optimized_lipids:
             stock_conc = self._find_stock(name)
             if stock_conc is None:
-                #print(f'WARNING: cannot find stock solution of {name}. Ignoring...')
-                raise RuntimeError('cannot find stock solution of {name}. Ignoring...')
+                print(f'WARNING: cannot find stock solution of {name}. Ignoring...')
+                #raise RuntimeError('cannot find stock solution of {name}. Ignoring...')
+                return False
             else:
                 self.lipids.update({name: stock_conc})
 
-        self._filter_discrete_points()
+        if self._filter_discrete_points():
+            self.gpcam_save_discrete_evaluation_points()
+        else:
+            return False
+        
+        channel_initialization_results = []
+        for idx in range(self.n_channels):
+            res = self.initialize_channel(channel=idx)
+            channel_initialization_results.append(res)
 
-    def _filter_discrete_points(self):
+        return all(channel_initialization_results)
+
+    def gp_hardware_shutdown(self) -> bool:
+        
+        channel_shutdown_results = []
+        for idx in range(self.n_channels):
+            res = self.shutdown_channel(channel=idx)
+            channel_shutdown_results.append(res)
+
+        return all(channel_shutdown_results)
+
+    def _filter_discrete_points(self) -> bool:
 
         init_time = time.time()
         pts = np.array(self.gp_discrete_points, dtype=float)
@@ -558,7 +628,10 @@ class ROADMAP_Gp(Gp):
         self.gp_discrete_points = [pts[i] for i in range(pts.shape[0])]
 
         if len(self.gp_discrete_points) > 40000:
-            raise RuntimeError(f'Maximum length of filtered points is 40000, requested {len(self.gp_discrete_points)}')
+            print(f'Maximum length of filtered points is 40000, requested {len(self.gp_discrete_points)}')
+            return False
+        
+        return True
 
     def _update_layout(self):
 
@@ -610,8 +683,8 @@ class ROADMAP_Gp(Gp):
         lipid_dict = {}
         #frac_remaining = 1.0
         for compound, stock_conc in self.lipids.items():
-            frac = optpars.get(compound, 0.0)
-            lipid_dict[compound] = frac * stock_conc
+            frac = optpars.get(compound, self.all_par[self.all_par['name']==compound]['value'].iloc[0])
+            lipid_dict[compound] = frac
             #frac_remaining *= (1.0 - frac)
 
         total_concentration = sum(f for f in lipid_dict.values())
@@ -646,8 +719,8 @@ class ROADMAP_Gp(Gp):
         #channel = int(it_label) % self.n_channels
 
         # Configure a particular problem with a set of N lipids. Then there are N-1 keywords describing the composition, plus 1 for the total concentration.
-        # Calculate the composition we expect from optpars.
-        lipid_dict = {compound: optpars.get(compound, 0.0) for compound in self.lipids.keys()}
+        # Calculate the composition we expect from optpars. Get value from self.all_par if not present in optpars
+        lipid_dict = {compound: optpars.get(compound, self.all_par[self.all_par['name']==compound]['value'].iloc[0]) for compound in self.lipids.keys()}
 
         total_concentration = sum(f for f in lipid_dict.values())
 

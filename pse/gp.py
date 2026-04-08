@@ -3,7 +3,6 @@ from os import path, mkdir
 import json
 import math
 import matplotlib.pyplot as plt
-#from multiprocessing import Process, Queue
 from threading import Thread
 from queue import Queue
 import numpy as np
@@ -11,6 +10,7 @@ from scipy.interpolate import LinearNDInterpolator, interp1d
 import os.path
 import pickle
 import pandas as pd
+from scipy.interpolate import NearestNDInterpolator
 import time
 
 
@@ -48,8 +48,32 @@ def nice_interval(start=0, stop=1, step=None, numsteps=10):
     return np.arange(new_start, new_stop+0.05*new_step, new_step)
 
 
-def save_plot_1d(x, y, dy=None, xlabel='', ylabel='', color='blue', filename="plot", ymin=None, ymax=None, levels=5,
-                 niceticks=False, keep_plots=False, support_points=None):
+def pack(data):
+    """
+    Pack a numpy array or a list of tuples/lists into a dictionary
+    for serialization (e.g., to JSON).
+
+    :param data: numpy array OR list of tuples/lists
+    :return: (dict) packed array
+    """
+    if isinstance(data, np.ndarray):
+        nparray = data
+    elif isinstance(data, (list, tuple)) and all(isinstance(el, (list, tuple, np.ndarray)) for el in data):
+        nparray = np.array(data)
+    else:
+        raise TypeError("Input must be a numpy array or a list/tuple of tuples/lists.")
+
+    ret = {
+        "array": nparray.tolist(),
+        "dtype": str(nparray.dtype),
+        "shape": nparray.shape
+    }
+    return ret
+
+
+def save_plot_1d(x, y, dy=None, xlabel='', ylabel='', color=None, filename="plot", ymin=None, ymax=None, levels=5,
+                 niceticks=False, keep_plots=False, support_points=None, trace_label=None, yscale='linear',
+                 legend_loc='best'):
     import matplotlib.pyplot as plt
     import matplotlib
 
@@ -63,19 +87,24 @@ def save_plot_1d(x, y, dy=None, xlabel='', ylabel='', color='blue', filename="pl
 
     fig, ax = plt.subplots()
     if dy is None:
-        ax.plot(x, y, color=color)
+        ax.plot(x, y.T, color=color, label=trace_label)
     else:
-        ax.errorbar(x, y, dy, color=color)
+        ax.errorbar(x, y, dy, color=color, label=trace_label)
     if niceticks:
         bounds = nice_interval(start=ymin, stop=ymax, numsteps=levels)
         ax.set_yticks(bounds)
     if support_points is not None:
         print(support_points, support_points.shape)
-        ax.errorbar(support_points[:, 0], support_points[:, 1], support_points[:,2] ** 0.5, fmt='o', alpha=0.7, markersize=8, capsize=6, c='k')
+        ax.errorbar(support_points[:, 0], support_points[:, 1], support_points[:,2] ** 0.5, fmt='o', alpha=0.7,
+                    markersize=8, capsize=6, c='k')
 
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
-    ax.ticklabel_format(scilimits=(-3, 3), useMathText=True)
+    ax.set_yscale(yscale)
+    if yscale == 'linear':
+        ax.ticklabel_format(scilimits=(-3, 3), useMathText=True)
+    if trace_label is not None:
+        ax.legend(loc=legend_loc)
 
     plt.tight_layout()
 
@@ -132,6 +161,18 @@ def save_plot_2d(x, y, z, xlabel, ylabel, color, filename='plot', zmin=None, zma
     plt.close("all")
 
 
+def unpack(packed):
+    """
+    Unpack a dictionary produced by `pack()` back into a NumPy array.
+
+    :param packed: (dict) with keys 'array', 'dtype', 'shape'
+    :return: (np.ndarray) reconstructed NumPy array
+    """
+    array = np.array(packed["array"], dtype=packed["dtype"])
+    array = array.reshape(packed["shape"])
+    return array
+
+
 class Gp:
     def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50,
                  gpcam_init_dataset_size=20, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam',
@@ -145,6 +186,9 @@ class Gp:
         :param gp_discrete_points: (ndarray or list) of shape V x D, where D is the length of the input vector that
                                    defines the grid of possible measurement points. If gp_discrete points is provided,
                                    there still needs to be an exp_par dataframe for plotting and naming.
+                                   (string) If a string is provided, this is interpreted as a filenam of a json
+                                   file that contains the discrete points, if the string value is 'default file', the
+                                   default filename /evaluation_points.json is used.
         :param resume: (bool, default False) loads previous results from the storage path.
         :param signal_estimate: (float) estimated max signal (max - min) for gp hyperparameter setting
         """
@@ -230,14 +274,27 @@ class Gp:
                 self.results_io(load=True)
 
         elif self.optimizer == 'gpcam':
-            # create discrete points for the GPOptimizer, if none were provided
+            # use provided or load discrete evaluation points for the GPOptimizer
+            # create them from bounds and stepsizes, if none were provided
             if gp_discrete_points is not None:
-                self.gp_discrete_points = gp_discrete_points
+                if isinstance(gp_discrete_points, str):
+                    if gp_discrete_points == 'default file':
+                        gp_discrete_points = path.join(self.spath, 'evaluation_points.json')
+                    self.gpcam_load_discrete_evaluation_points(gp_discrete_points)
+                else:
+                    self.gp_discrete_points = gp_discrete_points
             else:
                 grids = np.meshgrid(*self.axes, indexing='ij')
                 self.gp_discrete_points = np.stack(grids, axis=-1).reshape(-1, len(self.axes))
                 # make this numpy array into a list of numpy arrays along axis 0
+                # This is mainly for GPOptimizer.ask(), which requires a list of 1d-numpy arrays for non-Eucledian
+                # inputs
                 self.gp_discrete_points = [self.gp_discrete_points[i] for i in range(self.gp_discrete_points.shape[0])]
+
+            # save discrete points for later reuse if not loaded from file
+            if not isinstance(gp_discrete_points, str):
+                self.gpcam_save_discrete_evaluation_points()
+
             self.hyper_bounds = None
 
             if resume:
@@ -246,12 +303,13 @@ class Gp:
                 except FileNotFoundError:
                     resume = False
             if not resume:
-                columns = ['parameter names', 'position', 'value', 'variance']
+                columns = ['parameter names', 'position', 'value', 'variance', 'mutual information', 'itlabel']
                 self.gpCAMstream = pd.DataFrame(columns=columns)
                 self.gpiteration = 0
 
         self.prediction_gpcam = np.zeros(self.steplist)
         self.prediction_var_gpcam = np.zeros(self.steplist)
+        self.mutual_information_gpcam = None
 
     def do_measurement(self, optpars, it_label, entry, q):
         """
@@ -259,7 +317,9 @@ class Gp:
         function providing virtual data is provided
         :param optpars: specific set of parameters for the measurement
         :param it_label: a label for the current iteration
-        :entry (dict) the record without the results that will be deposited in the result queue
+        :param entry: (dict) the record without the results that will be deposited in the result queue
+                      dict keys: 'parameter names' (list(str)), 'position': (list),
+                     'itlabel': (int), 'value': float, 'variance': float
         :param q: (multiprocessing.Queue) the result queue
         :return: (result, variance) measurement result
         """
@@ -311,6 +371,26 @@ class Gp:
 
         return result, variance
 
+    def gp_hardware_intitialzation(self):
+        """
+        Method to be implemented in each subclass that initializes the measurement hardware.
+        :return: (bool) True if successful, False otherwise.
+        """
+        print("Initializing simulated GP hardware...")
+        time.sleep(10)
+        print("Simulated GP hardware intialized.")
+        return True
+
+    def gp_hardware_shutdown(self):
+        """
+        Method to be implemented in each subclass that shuts down the measurement hardware.
+        :return: (bool) True if successful, False otherwise.
+        """
+        print("Shutting down simulated GP hardware...")
+        time.sleep(10)
+        print("Simulated GP hardware shutdown.")
+        return True
+
     def gpcam_init_ae(self, just_gpcamstream=False):
         if not just_gpcamstream:
             # Compute Input Ranges
@@ -353,9 +433,9 @@ class Gp:
 
         if len(x) >= 1:
             # use any previously computed results
-            x = np.array(x)
-            y = np.array(y)
-            v = np.array(v)
+            x = np.atleast_1d(x)
+            y = np.atleast_1d(y)
+            v = np.atleast_1d(v)
             self.gpiteration = len(x)
             # tell the optimizer the data that was already collected
             self.my_ae.tell(x, y, v, append=False)
@@ -366,7 +446,17 @@ class Gp:
             self.gpiteration = 0
         return
 
+    def gpcam_load_discrete_evaluation_points(self, filename):
+        with open(filename, 'r') as file:
+            packed = json.load(file)
+        self.gp_discrete_points = unpack(packed)
+        self.gp_discrete_points = [self.gp_discrete_points[i] for i in range(self.gp_discrete_points.shape[0])]
+
     def gpcam_optimization_loop(self):
+        """
+        The GP main optimization loop
+        :return: (bool) True if all iterations finished, False otherwise.
+        """
         def collect_measurement(gpcam_initialized=False):
             result = self.measurement_results_queue.get()
             x = np.array([result['position']])
@@ -374,10 +464,9 @@ class Gp:
             v = np.array([result['variance']])
             print('Colected measurement results x, y, v: {}, {}, {}'.format(x, y, v))
             print('\n')
-            # This is replacing the point that was previously preset with predicted value
             self.gpCAMstream.loc[len(self.gpCAMstream)] = result
             self.gpcam_init_ae(just_gpcamstream=True)
-            self.results_io()
+
             # remove the current task from the in-progress list
             self.measurement_inprogress = [item for item in self.measurement_inprogress
                                            if not np.array_equal(item[1], result['position'])]
@@ -396,10 +485,10 @@ class Gp:
                 # retell the gpCAM optimizer the measuremnts in progress
                 if self.measurement_inprogress:
                     meas_points = [point[1] for point in self.measurement_inprogress]
-                    meas_points = np.array(meas_points)
-                    pred_mean = self.my_ae.posterior_mean(meas_points)["f(x)"]
+                    meas_points = np.atleast_1d(meas_points)
+                    pred_mean = np.atleast_1d(self.my_ae.posterior_mean(meas_points)["m(x)"])
                     # pred_var = self.my_ae.posterior_covariance(pred_points, variance_only=True)["v(x)"]
-                    pred_var = np.array([self.signal_estimate * 1e-7] * meas_points.shape[0])
+                    pred_var = np.atleast_1d([self.signal_estimate * 1e-7] * meas_points.shape[0])
                     self.my_ae.tell(meas_points, pred_mean, pred_var, append=True)
 
                 # train
@@ -409,7 +498,16 @@ class Gp:
                 else:
                     self.gpcam_train(method='local')
                 self.gpcam_prediction()
+
+                hypars = self.my_ae.get_hyperparameters().tolist()
+                hycols = ['hy'+str(i) for i in range(len(hypars))]
+                for i, col in enumerate(hycols):
+                    self.gpCAMstream.at[self.gpCAMstream.index[-1], col] = hypars[i]
+                self.gpCAMstream.at[self.gpCAMstream.index[-1], 'mutual information'] = self.mutual_information_gpcam
                 self.gpcam_plot()
+
+            self.results_io()
+            self.iterations_inprogress_save_to_file()
             return
 
         # Using the gpCAM global optimizer
@@ -417,7 +515,8 @@ class Gp:
 
         # save and evaluate initial data set if it has been freshly calculate
         print('Checking if sufficient initial measurements.')
-        while self.gpiteration < self.gpcam_init_dataset_size and not self.task_dict.get("cancelled", False):
+        while (self.gpiteration < self.gpcam_init_dataset_size and not self.task_dict['cancelled'] and
+               not self.task_dict['paused']):
             if not self.measurement_results_queue.empty():
                 collect_measurement(gpcam_initialized=False)
             elif len(self.measurement_inprogress) < self.parallel_measurements:
@@ -443,7 +542,8 @@ class Gp:
                 self.gpiteration += 1
 
         printed = False
-        while len(self.measurement_inprogress) == self.gpcam_init_dataset_size and not self.task_dict.get("cancelled", False):
+        while (len(self.measurement_inprogress) == self.gpcam_init_dataset_size and
+               not self.task_dict['cancelled'] and not self.task_dict['paused']):
             if not printed:
                 print('Waiting for at least one measurement to finish.')
                 printed = True
@@ -458,7 +558,7 @@ class Gp:
         # self.gpcam_plot()
 
         while (len(self.gpCAMstream['position'].to_numpy()) < self.gpcam_iterations
-               and not self.task_dict.get("cancelled", False)):
+               and not self.task_dict["cancelled"] and not self.task_dict["paused"]):
             # print('gpCAM main loop with abortion signal {}'.format(self.task_dict.get("cancelled", False)))
             # print("length of the dataset: ", len(self.my_ae.x_data))
 
@@ -491,20 +591,34 @@ class Gp:
                     # will be later replaced
                     next_point = np.array(next_points['x'][0])
                     pred_points = next_point.reshape(1, -1)
-                    pred_mean = self.my_ae.posterior_mean(pred_points)["f(x)"]
+                    pred_mean = np.atleast_1d(self.my_ae.posterior_mean(pred_points)["m(x)"])
                     # pred_var = self.my_ae.posterior_covariance(pred_points, variance_only=True)["v(x)"]
-                    pred_var = np.array([self.signal_estimate * 1e-7])
+                    pred_var = np.atleast_1d([self.signal_estimate * 1e-7])
                     self.my_ae.tell(pred_points, pred_mean, pred_var, append=True)
                     self.gpcam_train(method='local')
                     if submit_counter == n:
                         break
-
             else:
-                if not self.measurement_inprogress:
-                    # delete iterations in progress log file
-                    self.iterations_inprogress_delete_file()
                 # nothing to do
                 time.sleep(5)
+
+        printed = False
+        while self.measurement_inprogress and not self.task_dict["cancelled"] and self.task_dict["paused"]:
+            if not printed:
+                print('Paused. Waiting for remaining measurements to finish. Stop PSE to abort.')
+                printed = True
+            if not self.measurement_results_queue.empty():
+                collect_measurement(gpcam_initialized=True)
+            else:
+                print('Still waiting for remaining measurements to finish.')
+                print(self.measurement_inprogress)
+                time.sleep(60)
+
+        if not self.measurement_inprogress:
+            # delete iterations in progress log file
+            self.iterations_inprogress_delete_file()
+
+        return len(self.gpCAMstream['position'].to_numpy()) >= self.gpcam_iterations
 
     def gpcam_plot(self):
         path1 = path.join(self.spath, 'plots')
@@ -517,14 +631,16 @@ class Gp:
             if support_points.dtype == object:
                 support_points = np.stack(support_points)
                 vv = self.gpCAMstream[['value', 'variance']].to_numpy()
-                support_points = np.concatenate((support_points, self.gpCAMstream[['value', 'variance']].to_numpy()), axis=-1)
+                support_points = np.concatenate((support_points,
+                                                 self.gpCAMstream[['value', 'variance']].to_numpy()), axis=-1)
         else:
             support_points = None
 
         if len(self.axes) > 1:
             interp = LinearNDInterpolator(self.gp_discrete_points, self.prediction_gpcam)
         else:
-            interp = interp1d(np.array(self.gp_discrete_points).squeeze(), self.prediction_gpcam, fill_value=np.nan, bounds_error=False, kind='linear')
+            interp = interp1d(np.array(self.gp_discrete_points).squeeze(), self.prediction_gpcam, fill_value=np.nan,
+                              bounds_error=False, kind='linear')
 
         mesh = np.meshgrid(*self.axes, indexing='ij')
         stacked = np.stack(mesh, axis=-1)
@@ -534,12 +650,58 @@ class Gp:
                           filename=path.join(path1, 'prediction_gpcam'), mark_maximum=True,
                           support_points=support_points)
 
-    def gpcam_prediction(self):
+        # plot mutual information and hyperparameters
+        hypar_cols = [col for col in self.gpCAMstream.columns if col.startswith('hy')]
+        if 'mutual information' in self.gpCAMstream.columns:
+            hypar_cols = ['mutual information'] + hypar_cols
+
+        if hypar_cols:
+            filtered = self.gpCAMstream[hypar_cols].copy()
+            filtered.insert(0, 'index', self.gpCAMstream.index)
+            filtered = filtered.dropna()
+            filtered = filtered.to_numpy().T
+            save_plot_1d(filtered[0], filtered[1:], filename=path.join(path1, 'hypars'), xlabel='iteration',
+                         ylabel='information gain / hyperparameter', trace_label=hypar_cols, yscale='symlog',
+                         legend_loc='upper left')
+
+    def gpcam_prediction(self, max_samplesize=500):
         """
         Creates a gp model prediction on all input points defined by the axes and steps of the optimization
         problem defined during object intialization.
+        :param max_samplesize: maximum number of evaluation points for the variance and mutual information
         :return: no return value
         """
+
+        def scale_up(dsgrid, dsvalues, usgrid):
+            """
+            Interpolates a (downscaled) discreate grid of values onto a denser (upscaled) grid
+            :param dsgrid: (np array) the discrete set of downscaled grid positions
+            :param dsvalues: (np array) the discrete set of downscaled grid values
+            :param usgrid:  (np array) the upscaled grid positions
+            :return: (np array) the upscaled grid values
+            """
+
+            if dsgrid.ndim == 1:
+                # one-dimensional grid
+                x = dsgrid.reshape(-1)
+                order = np.argsort(x)
+                x = x[order]
+                y = np.asarray(dsvalues)[order]
+                interp_var = interp1d(x, y, bounds_error=False, fill_value="extrapolate", kind="linear")
+                usvalues = interp_var(usgrid.reshape(-1))
+            else:
+                # multi-dimenstional grid
+                interp_var = LinearNDInterpolator(dsgrid, dsvalues, fill_value=np.nan)
+                usvalues = interp_var(usgrid)
+
+            # replace and nan for grid positions outside the convex hull defined by the dsgrid points with nearest
+            # neighbor interpolation
+            if np.isnan(usvalues).any():
+                nn_interp = NearestNDInterpolator(dsgrid, dsvalues)
+                nan_mask = np.isnan(usvalues)
+                usvalues[nan_mask] = nn_interp(usgrid[nan_mask])
+
+            return usvalues
 
         # Only use discrete points for prediction and plotting.
         # TODO: In case we want to allow defining the parameter space by boundaries, use the the commented out code
@@ -550,21 +712,38 @@ class Gp:
         # prediction_positions = np.array(stacked.reshape(-1, len(self.axes)), dtype=np.float32)
         prediction_positions = np.array(self.gp_discrete_points, dtype=np.float32)
 
-        self.prediction_gpcam = self.my_ae.posterior_mean(prediction_positions)["f(x)"]
+        # Use sparse prediction points for variance and mutual information
+        n = prediction_positions.shape[0]
+        sample_size = min(n, max_samplesize)
+        idx = np.random.choice(n, sample_size, replace=False)
+        sparse_positions = prediction_positions[idx]
+
+        self.prediction_gpcam = self.my_ae.posterior_mean(prediction_positions)["m(x)"]
         # self.prediction_gpcam = mean.reshape(self.steplist)
 
-        # TODO: Variance becomes expensive to calculate above 2 dimensions. Need to investigate. If currently
-        #   too many points used, it will freeze up all threads, including the gp server. This also means we should
-        #   probably return to using Processes instead of threads.
-
-        self.prediction_var_gpcam = self.my_ae.posterior_covariance(prediction_positions, variance_only=True, add_noise=False)["v(x)"]
+        # Variance is expensive to calculate above 2 dimensions and for many points. Use sparse samples
+        self.prediction_var_gpcam = self.my_ae.posterior_covariance(sparse_positions, variance_only=True,
+                                                                    add_noise=False)["v(x)"]
+        # scale back up to original prediction point density
+        self.prediction_var_gpcam = scale_up(sparse_positions, self.prediction_var_gpcam, prediction_positions)
         # self.prediction_var_gpcam = var.reshape(self.steplist)
+
+        mutual_information = self.my_ae.gp_mutual_information(sparse_positions)['mutual information']
+        self.mutual_information_gpcam = float(mutual_information)
+
+    def gpcam_save_discrete_evaluation_points(self):
+        if self.gp_discrete_points is None:
+            return
+        packed = pack(self.gp_discrete_points)
+        with open(path.join(self.spath, 'evaluation_points.json'), 'w') as file:
+            json.dump(packed, file)
 
     def gpcam_train(self, method='mcmc'):
         # following line to avoid bounds errors
-        #print('Original hyperparameters: ', self.my_ae.hyperparameters)
-        self.my_ae.set_hyperparameters(np.clip(self.my_ae.hyperparameters, self.hyper_bounds[:,0], self.hyper_bounds[:,1]))
-        #print('New hyperparameters: ', self.my_ae.hyperparameters)
+        # print('Original hyperparameters: ', self.my_ae.hyperparameters)
+        self.my_ae.set_hyperparameters(np.clip(self.my_ae.hyperparameters, self.hyper_bounds[:, 0],
+                                               self.hyper_bounds[:, 1]))
+        # print('New hyperparameters: ', self.my_ae.hyperparameters)
         self.my_ae.train(
             hyperparameter_bounds=self.hyper_bounds,
             method=method,
@@ -576,7 +755,7 @@ class Gp:
             hyperparameter_bounds=self.hyper_bounds,
             max_iter=10000
         )
-        #self.my_ae.update_hyperparameters(opt_obj)
+        # self.my_ae.update_hyperparameters(opt_obj)
         return opt_obj
 
     def gridsearch_iterate_over_all_indices(self, refinement=False):
@@ -613,7 +792,8 @@ class Gp:
         # the complicated iteration syntax is due the unknown dimensionality of the results space / arrays
         it = np.nditer(self.results, flags=['multi_index'])
 
-        while not it.finished and not self.measurement_aborted:
+        while (not it.finished and not self.measurement_aborted and not self.task_dict['cancelled'] and
+               not self.task_dict['paused']):
             # first collect any finished measurements
             if not self.measurement_results_queue.empty():
                 collect_measurement()
@@ -639,6 +819,24 @@ class Gp:
                 time.sleep(5)
 
         return bWorkedOnIndex
+
+    def gridsearch_optimization_loop(self):
+        # Grid search
+        # every index has at least one result before re-analyzing any data point (refinement)
+        bRefinement = False
+        opt_finished = False
+        while (True and not self.task_dict['paused'] and not self.task_dict['cancelled'] and
+               not self.measurement_aborted):
+            bWorkedOnAnyIndex = self.gridsearch_iterate_over_all_indices(bRefinement)
+            if not bWorkedOnAnyIndex:
+                if not bRefinement:
+                    # all indices have the minimum number of iterations -> start refinement
+                    bRefinement = True
+                else:
+                    # done with refinement
+                    opt_finished = True
+                    break
+        return opt_finished
 
     def iterations_inprogress_delete_file(self):
         """
@@ -669,49 +867,52 @@ class Gp:
         with open(path.join(self.spath, 'results', 'current_iterations.pkl'), 'wb') as file:
             pickle.dump(output_df, file)
 
-    def run(self, task_dict):
+    def run(self, task_dict, from_pause=False):
+        """
+        Runs the PSE algorithm. Parameters are provided in the task_dict dictionary.
+        :param task_dict: (dict) A dictionary containing the parameters to be passed to the PSE algorithm.
+        :return: (bool) True if the algorithm ran succesfully, False otherwise.
+        """
         self.task_dict = task_dict
-        self.task_dict['status'] = 'running'
 
-        if self.optimizer == 'grid':
-            self.run_optimization_grid()
-        elif self.optimizer == 'gpcam':
-            self.gpcam_optimization_loop()
-        else:
-            self.task_dict['status'] = 'failure'
-            raise NotImplementedError('Unknown optimization method')
+        if self.optimizer != 'grid' and self.optimizer != 'gpcam':
+            self.task_dict['status'] = 'failure - optimization method not implemented'
+
+        if 'paused' not in self.task_dict:
+            self.task_dict['paused'] = False
+
+        if not from_pause:
+            # only intialize hardware if PSE was not paused before since hardware would already be initialized
+            if not self.gp_hardware_intitialzation():
+                self.task_dict['status'] = 'failure - could not initialize hardware'
+                return False
+
+        self.task_dict['status'] = 'running'
+        while True:
+            if self.optimizer == 'grid':
+                opt_finished = self.gridsearch_optimization_loop()
+            elif self.optimizer == 'gpcam':
+                opt_finished = self.gpcam_optimization_loop()
+
+            # test for edge case: user must have unpaused or unstopped before loop finished, continue optimization
+            if self.task_dict['paused'] or self.task_dict['cancelled'] or opt_finished or self.measurement_aborted:
+                break
 
         if self.measurement_aborted:
             if self.task_dict['status'] == 'failure':
+                self.task_dict['status'] = 'failure - PSE failed during optimization'
                 return False
 
-        # stopping or running status reset to idle
+        if not self.task_dict['paused']:
+            # only shut down hardware if not paused
+            if not self.gp_hardware_shutdown():
+                self.task_dict['status'] = 'failure - Could not shutdown hardware'
+                return False
+
         self.task_dict['status'] = 'idle'
         return True
 
-    def run_optimization_grid(self):
-        # Grid search
-        # every index has at least one result before re-analyzing any data point (refinement)
-        bRefinement = False
-        while True:
-            bWorkedOnAnyIndex = self.gridsearch_iterate_over_all_indices(bRefinement)
-            if not bWorkedOnAnyIndex:
-                if not bRefinement:
-                    # all indices have the minimum number of iterations -> start refinement
-                    bRefinement = True
-                else:
-                    # done with refinement
-                    break
-
     def results_io(self, load=False):
-        def pack(nparray):
-            return_data = {
-                "array": nparray.tolist(),
-                "dtype": str(nparray.dtype),
-                "shape": nparray.shape
-            }
-            return return_data
-
         if self.optimizer == 'grid':
             if load:
                 with open(path.join(self.spath, 'results', 'pse_grid_results.pkl'), 'rb') as file:
@@ -809,15 +1010,12 @@ class Gp:
         :param itlabel: (any) some iteration label to identify the current iteration
         :return: (float, float) result and variance of the performed measurement
         """
-        current_task_data = (None, position, itlabel)
-        self.measurement_inprogress.append(current_task_data)
-        self.iterations_inprogress_save_to_file()
-
-        print(self.task_dict)
         if self.task_dict['cancelled']:
             self.task_dict['status'] = 'stopping'
             self.measurement_aborted = True
             return None, None
+
+        current_task_data = (None, position, itlabel)
 
         optpars = {}
         # cycle through all parameters
@@ -829,17 +1027,18 @@ class Gp:
         try:
             q = self.measurement_results_queue
             entry = {'parameter names': self.exp_par['name'].to_list(), 'position': current_task_data[1],
-                     'value': None, 'variance': None}
+                     'itlabel': itlabel, 'value': None, 'variance': None}
             p = Thread(
                 target=self.do_measurement,
                 args=(optpars, itlabel, entry, q)
             )
             p.start()
+            self.measurement_inprogress.append(current_task_data)
+            self.iterations_inprogress_save_to_file()
         except RuntimeError as e:
             print('Measurement failed outside of GP {}'.format(e))
             self.task_dict['status'] = 'failure'
             self.measurement_aborted = True
-            self.measurement_inprogress.remove(current_task_data)
 
         return
 
