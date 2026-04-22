@@ -129,7 +129,7 @@ class GpServer:
             self.gpo = None
             self.p = None
         else:
-            # PSE not cancelled, but process not alive -> gp is in pause
+            # PSE not canceled, but process not alive -> gp is in pause
             # shut down hardware
             if self.gpo is not None:
                 self.gpo.gp_hardware_shutdown()
