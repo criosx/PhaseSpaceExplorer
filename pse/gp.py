@@ -894,12 +894,12 @@ class Gp:
                                  levels=levels, mark_maximum=mark_maximum, keep_plots=self.keep_plots)
 
 
-    def plot_results(self):
+    def plot_results(self, mark_maximum=True):
         if self.optimizer == 'grid':
             path1 = path.join(self.spath, 'plots')
             filename = path.join(path1, 'prediction_gpcam')
             self.plot_array(np.nan_to_num(self.results, nan=0), arr_variance=np.nan_to_num(self.variances, nan=0.0),
-                            filename=filename)
+                            filename=filename, mark_maximum=mark_maximum)
         elif self.optimizer == 'gpcam':
             path1 = path.join(self.spath, 'plots')
             if not path.isdir(path1):
@@ -927,7 +927,7 @@ class Gp:
             plot_positions = np.array(stacked.reshape(-1, len(self.axes)), dtype=np.float32)
 
             self.plot_array(interp(plot_positions).reshape(self.steplist),
-                            filename=path.join(path1, 'prediction_gpcam'), mark_maximum=True,
+                            filename=path.join(path1, 'prediction_gpcam'), mark_maximum=mark_maximum,
                             support_points=support_points)
 
             # plot mutual information and hyperparameters
