@@ -108,11 +108,14 @@ class GpServer:
         else:
             from pse.roadmap import ROADMAP_Gp as GpObject
 
+        return self.start_Gp_thread(data, from_pause=from_pause, gpobject=GpObject)
+
+    def start_Gp_thread(self, data, from_pause=False, gpobject=None):
         if from_pause:
             # just reinitialize the object with updated arguments, keep inits from children untouched
             GpParent.__init__(self.gpo, **data)
         else:
-            self.gpo = GpObject(**data)
+            self.gpo = gpobject(**data)
 
         self.task_dict["progress"] = "0%"
         self.p = Thread(target=self.gpo.run, args=(self.task_dict, from_pause))
