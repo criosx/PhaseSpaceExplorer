@@ -235,40 +235,29 @@ def save_session_state(folder):
         json.dump(st.session_state['opt_pars'], file)
 
 
-def start_stop_optimization(opt_acq=None, client=None, opt_optimizer=None, init_iter=None, gp_iter=None,
-                            parallel_meas=1, gp_discrete_points=None):
+def start_stop_optimization(kwargs=None):
     """
     Implementatio of the start/stop logic of the PSE exploration.
-    :param opt_acq: (str) the acquisition function of the gp optimizer (None if in grid mode)
-    :param client: (str) the optimization client (ROADMAP, test function, i.e.) (will be replaced by inheritance at
-                         some point.
-    :param opt_optimizer: (str) optimizer ('grid' or 'gpcam')
-    :param init_iter: (int | None) initial (burn in) iterations for gpcam
-    :param gp_iter: (int | None) number of iterations for gpcam
-    :param parallel_meas: (int) number of parallel measurements to be executed
-    :param gp_discrete_points: (np array-like | None) optional discrete evaluation points
-    :return:
+    :param kwargs: (dict) argurments to be passed through ultimately to gp.go_pse(). Base parameters are:
+        :opt_acq: (str) the acquisition function of the gp optimizer (None if in grid mode)
+        :client: (str) the optimization client (ROADMAP, test function, i.e.)
+        :opt_optimizer: (str) optimizer ('grid' or 'gpcam')
+        :init_iter: (int | None) initial (burn in) iterations for gpcam
+        :gp_iter: (int | None) number of iterations for gpcam
+        :parallel_meas: (int) number of parallel measurements to be executed
+        :gp_discrete_points: (np array-like | None) optional discrete evaluation points
+        :storage_path: (str | Path-like) path to PSE storage folder
+        :exp_par: (Pandas dataframe) experimental parameters for the PSE exploration
+        :resume: (bool) whether to resume the PSE exploration (default: True)
+        :project_name: (str) project name
+    :return: no return value
     """
-    kwargs = {'exp_par': st.session_state['opt_pars'],
-              'storage_path': str(st.session_state['pse_dir']),
-              'acq_func': opt_acq,
-              'client': client,
-              'optimizer': opt_optimizer,
-              'gp_discrete_points': gp_discrete_points,
-              'gpcam_init_dataset_size': init_iter,
-              'gpcam_iterations': gp_iter,
-              'parallel_measurements': parallel_meas,
-              'resume': True,
-              'project_name': st.session_state.cfg.experiment
-              }
 
     save_exists = os.path.isfile(os.path.join(st.session_state['pse_dir'], 'evaluation_points.json'))
     if save_exists:
         reuse_points = st.checkbox('Reuse saved evaluation points', value=True)
         if reuse_points:
             kwargs['gp_discrete_points'] = 'default file'
-    else:
-        kwargs['gp_discrete_points'] = gp_discrete_points
 
     col_opt_5, col_opt_6 = st.columns([1, 1])
     port = st.session_state['gp_server_port']
@@ -309,7 +298,7 @@ def start_stop_optimization(opt_acq=None, client=None, opt_optimizer=None, init_
                 jstatus = 'failure - PSE pause'
     elif jstatus == 'idle':
         if rpse and not ppse:
-            st.session_state['gp_iterations'] = gp_iter
+            st.session_state['gp_iterations'] = kwargs['gp_iter']
             if run_pse(port, **kwargs):
                 jstatus = 'pending PSE startup'
             else:
@@ -321,7 +310,7 @@ def start_stop_optimization(opt_acq=None, client=None, opt_optimizer=None, init_
             else:
                 jstatus = 'failure - PSE shutdown'
         elif not ppse:
-            st.session_state['gp_iterations'] = gp_iter
+            st.session_state['gp_iterations'] = kwargs['gp_iter']
             if resume_pse(port, **kwargs):
                 jstatus = 'pending PSE resume'
             else:
@@ -506,10 +495,11 @@ def parameter_input():
     st.session_state['opt_pars'] = parameters_edited
     save_session_state(st.session_state['pse_dir'])
 
-def run_control(configuration, gp_discrete_points=None):
+def run_control(configuration, gp_discrete_points=None, kwargs=None):
     """
     Implements the run/stop, pause/unpause section of the Streamlit GUI. If the PSE should be carried out over a set of
     discrete evaluation points, they should be provided.
+    :param kwargs: additional keyword arguments to be passed on to the gp object (for subclassing)
     :param configuration: the configuration module used for the particular application
     :param gp_discrete_points: a set of discrete evaluation points
     :return: no return value
@@ -555,14 +545,24 @@ def run_control(configuration, gp_discrete_points=None):
     st.session_state.cfg.parallel_measurements = parallel_meas
 
     configuration.save_persistent_cfg(st.session_state.cfg)
-    start_stop_optimization(
-        opt_acq=opt_acq,
-        client=client,
-        opt_optimizer=opt_optimizer,
-        init_iter=init_iter,
-        gp_iter=gp_iter,
-        parallel_meas=parallel_meas,
-        gp_discrete_points=gp_discrete_points
-    )
+
+    kwargs2 = {'exp_par': st.session_state['opt_pars'],
+              'storage_path': str(st.session_state['pse_dir']),
+              'acq_func': opt_acq,
+              'client': client,
+              'optimizer': opt_optimizer,
+              'gp_discrete_points': gp_discrete_points,
+              'gpcam_init_dataset_size': init_iter,
+              'gpcam_iterations': gp_iter,
+              'parallel_measurements': parallel_meas,
+              'resume': True,
+              'project_name': st.session_state.cfg.experiment
+              }
+    if kwargs is None:
+        kwargs = kwargs2
+    else:
+        kwargs.update(kwargs2)
+
+    start_stop_optimization(kwargs)
 
 
