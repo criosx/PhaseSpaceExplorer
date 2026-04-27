@@ -1,13 +1,12 @@
 from contextlib import closing
 import os
-import pandas
 from pathlib import Path
 import socket
 import streamlit as st
 import subprocess
+import sys
 import uuid
 
-from pse import gp_server
 from pse import configuration
 
 st.write("""
@@ -41,8 +40,20 @@ if 'first_intialization' not in st.session_state:
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
         s.bind(('', 0))  # Bind to a free port provided by the host.
         port = s.getsockname()[1]  # Return the port number assigned.
-    st.session_state['gp_server_port'] = port
-    server_path = gp_server.__file__
-    subprocess.Popen(['python', server_path, str(port)])
 
+    st.session_state['gp_server_port'] = port
+    st.session_state['gp_server_process'] = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "from pse.gp_server import GpServer; "
+                "GpServer().run(int(sys.argv[1]))"
+            ),
+            str(port),
+        ],
+        stdout=None,
+        stderr=None,
+    )
 
