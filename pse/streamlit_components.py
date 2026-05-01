@@ -294,7 +294,7 @@ def start_stop_optimization(kwargs=None):
                 jstatus = 'failure - PSE pause'
     elif jstatus == 'idle':
         if rpse and not ppse:
-            st.session_state['gp_iterations'] = kwargs['gp_iter']
+            st.session_state['gp_iterations'] = kwargs['gpcam_iterations']
             if run_pse(port, **kwargs):
                 jstatus = 'pending PSE startup'
             else:
@@ -306,7 +306,7 @@ def start_stop_optimization(kwargs=None):
             else:
                 jstatus = 'failure - PSE shutdown'
         elif not ppse:
-            st.session_state['gp_iterations'] = kwargs['gp_iter']
+            st.session_state['gp_iterations'] = kwargs['gpcam_iterations']
             if resume_pse(port, **kwargs):
                 jstatus = 'pending PSE resume'
             else:
