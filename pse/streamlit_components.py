@@ -542,16 +542,9 @@ def run_control(configuration, gp_discrete_points=None, kwargs=None):
 
     configuration.save_persistent_cfg(st.session_state.cfg)
 
-    if 'opt_pars' in st.session_state:
-        if not any(st.session_state['opt_pars']['optimize']):
-            st.warning("Please, select at least on parameter to optimize before starting PSE.")
-            st.stop()
-        else:
-            kwargs2 = {'exp_par': st.session_state['opt_pars']}
-    else:
-        kwargs2 = {}
 
-    kwargs2.update({
+
+    kwargs2 = {
         'storage_path': str(st.session_state['pse_dir']),
         'acq_func': opt_acq,
         'client': client,
@@ -562,7 +555,7 @@ def run_control(configuration, gp_discrete_points=None, kwargs=None):
         'parallel_measurements': parallel_meas,
         'resume': True,
         'project_name': st.session_state.cfg.experiment
-    })
+    }
     if kwargs is None:
         kwargs = kwargs2
     else:

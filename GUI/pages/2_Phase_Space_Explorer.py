@@ -26,7 +26,16 @@ with st.expander('Setup'):
     """)
     streamlit_components.parameter_input()
 
+if 'opt_pars' in st.session_state:
+    if not any(st.session_state['opt_pars']['optimize']):
+        st.warning("Please, select at least on parameter to optimize before starting PSE.")
+        st.stop()
+    else:
+        kwargs = {'exp_par': st.session_state['opt_pars']}
+else:
+    kwargs = {}
+
 st.write("""
 # Run Control
 """)
-streamlit_components.run_control(configuration=configuration)
+streamlit_components.run_control(configuration=configuration, kwargs=kwargs)
