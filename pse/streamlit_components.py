@@ -263,10 +263,6 @@ def start_stop_optimization(kwargs=None):
     port = st.session_state['gp_server_port']
     jstatus = st.session_state['jobs_status']
 
-    if not any(st.session_state['opt_pars']['optimize']):
-        st.warning("Please, select at least on parameter to optimize before starting PSE.")
-        st.stop()
-
     # find presets in case of first run
     if jstatus == 'running':
         rpse_first = True
@@ -546,22 +542,33 @@ def run_control(configuration, gp_discrete_points=None, kwargs=None):
 
     configuration.save_persistent_cfg(st.session_state.cfg)
 
-    kwargs2 = {'exp_par': st.session_state['opt_pars'],
-              'storage_path': str(st.session_state['pse_dir']),
-              'acq_func': opt_acq,
-              'client': client,
-              'optimizer': opt_optimizer,
-              'gp_discrete_points': gp_discrete_points,
-              'gpcam_init_dataset_size': init_iter,
-              'gpcam_iterations': gp_iter,
-              'parallel_measurements': parallel_meas,
-              'resume': True,
-              'project_name': st.session_state.cfg.experiment
-              }
+    if 'opt_pars' in st.session_state:
+        if not any(st.session_state['opt_pars']['optimize']):
+            st.warning("Please, select at least on parameter to optimize before starting PSE.")
+            st.stop()
+        else:
+            kwargs2 = {'exp_par': st.session_state['opt_pars']}
+    else:
+        kwargs2 = {}
+
+    kwargs2.update({
+        'storage_path': str(st.session_state['pse_dir']),
+        'acq_func': opt_acq,
+        'client': client,
+        'optimizer': opt_optimizer,
+        'gp_discrete_points': gp_discrete_points,
+        'gpcam_init_dataset_size': init_iter,
+        'gpcam_iterations': gp_iter,
+        'parallel_measurements': parallel_meas,
+        'resume': True,
+        'project_name': st.session_state.cfg.experiment
+    })
     if kwargs is None:
         kwargs = kwargs2
     else:
-        kwargs.update(kwargs2)
+        # function arguments in kwargs have priority over kwargs2
+        kwargs2.update(kwargs)
+        kwargs = kwargs2
 
     start_stop_optimization(kwargs)
 
