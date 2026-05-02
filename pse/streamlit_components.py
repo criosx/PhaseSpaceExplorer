@@ -247,17 +247,21 @@ def start_stop_optimization(kwargs=None):
         :parallel_meas: (int) number of parallel measurements to be executed
         :gp_discrete_points: (np array-like | None) optional discrete evaluation points
         :storage_path: (str | Path-like) path to PSE storage folder
-        :exp_par: (Pandas dataframe) experimental parameters for the PSE exploration
+        :exp_par: (Pandas dataframe converted to JSON) experimental parameters for the PSE exploration
         :resume: (bool) whether to resume the PSE exploration (default: True)
         :project_name: (str) project name
     :return: no return value
     """
-
+    # validate inputs
     save_exists = os.path.isfile(os.path.join(st.session_state['pse_dir'], 'evaluation_points.json'))
     if save_exists:
         reuse_points = st.checkbox('Reuse saved evaluation points', value=True)
         if reuse_points:
             kwargs['gp_discrete_points'] = 'default file'
+            
+    if 'exp_par' in kwargs:
+        if isinstance(kwargs['exp_par'], pandas.DataFrame):
+            kwargs['exp_par'] = kwargs['exp_par'].to_json(orient='records')
 
     col_opt_5, col_opt_6 = st.columns([1, 1])
     port = st.session_state['gp_server_port']
@@ -313,7 +317,6 @@ def start_stop_optimization(kwargs=None):
                 jstatus = 'failure - PSE resume'
 
     st.session_state['jobs_status'] = jstatus
-
 
 
 def stop_pse(port):
