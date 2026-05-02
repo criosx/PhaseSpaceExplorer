@@ -259,12 +259,12 @@ def start_stop_optimization(kwargs=None):
         if reuse_points:
             kwargs['gp_discrete_points'] = 'default file'
 
-    print(f'Test 1: exp_par is in kwargs: {"exp_par" in kwargs}')
-    print(f'Test 2: type of kwargs[exp_par]: {type(kwargs["exp_par"])}')
     if 'exp_par' in kwargs:
         if isinstance(kwargs['exp_par'], pandas.DataFrame):
-            print('Actually, I was here.')
             kwargs['exp_par'] = kwargs['exp_par'].to_dict(orient='records')
+    else:
+        st.error('No experimental optimization parameter provided. This is a script error and should not happen.')
+        st.stop()
 
     col_opt_5, col_opt_6 = st.columns([1, 1])
     port = st.session_state['gp_server_port']
@@ -547,8 +547,6 @@ def run_control(configuration, gp_discrete_points=None, kwargs=None):
     st.session_state.cfg.parallel_measurements = parallel_meas
 
     configuration.save_persistent_cfg(st.session_state.cfg)
-
-
 
     kwargs2 = {
         'storage_path': str(st.session_state['pse_dir']),
