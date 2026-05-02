@@ -259,6 +259,8 @@ def start_stop_optimization(kwargs=None):
         if reuse_points:
             kwargs['gp_discrete_points'] = 'default file'
 
+    print(f'Test 1: exp_par is in kwargs: {"exp_par" in kwargs}')
+    print(f'Test 2: type of kwargs[exp_par]: {type(kwargs["exp_par"])}')
     if 'exp_par' in kwargs:
         if isinstance(kwargs['exp_par'], pandas.DataFrame):
             print('Actually, I was here.')
