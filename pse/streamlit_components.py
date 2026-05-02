@@ -258,10 +258,11 @@ def start_stop_optimization(kwargs=None):
         reuse_points = st.checkbox('Reuse saved evaluation points', value=True)
         if reuse_points:
             kwargs['gp_discrete_points'] = 'default file'
-            
+
     if 'exp_par' in kwargs:
         if isinstance(kwargs['exp_par'], pandas.DataFrame):
-            kwargs['exp_par'] = kwargs['exp_par'].to_json(orient='records')
+            print('Actually, I was here.')
+            kwargs['exp_par'] = kwargs['exp_par'].to_dict(orient='records')
 
     col_opt_5, col_opt_6 = st.columns([1, 1])
     port = st.session_state['gp_server_port']
