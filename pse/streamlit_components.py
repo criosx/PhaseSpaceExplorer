@@ -452,14 +452,12 @@ def monitor():
         else:
             st.text("No results to show.")
 
-        figure_path = os.path.join(st.session_state['pse_dir'], 'plots')
-        # Iterate over all entries in the directory
-        for entry in os.listdir(figure_path):
-            # Construct full path
-            full_path = os.path.join(figure_path, entry)
-            # Check if it's a file and ends with .png
-            if os.path.isfile(full_path) and entry.lower().endswith('.png'):
-                png_files.append(full_path)
+        figure_path = Path(st.session_state['pse_dir']).expanduser().resolve() / 'plots'
+        if figure_path.is_dir():
+            png_files.extend(
+                file for file in figure_path.iterdir()
+                if file.is_file() and file.suffix.lower() == '.png'
+            )
 
     for file in png_files:
         try:
