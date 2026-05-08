@@ -240,7 +240,7 @@ def start_stop_optimization(kwargs=None):
     Implementatio of the start/stop logic of the PSE exploration.
     :param kwargs: (dict) argurments to be passed through ultimately to gp.go_pse(). Base parameters are:
         :opt_acq: (str) the acquisition function of the gp optimizer (None if in grid mode)
-        :client: (str) the optimization client (ROADMAP, test function, i.e.)
+        :client: (str) the optimization client (ROADMAP, test function)
         :opt_optimizer: (str) optimizer ('grid' or 'gpcam')
         :init_iter: (int | None) initial (burn in) iterations for gpcam
         :gp_iter: (int | None) number of iterations for gpcam

@@ -89,7 +89,7 @@ class GpServer:
     def start_pse(self):
         """
         POST request function that starts a PSE task.
-        The POST data must dictioinary must contain the keyword arguments passed to gp init
+        The POST data dictionary must contain the keyword arguments passed to gp init
         :return: status message.
         """
         # only start if no other thread is running

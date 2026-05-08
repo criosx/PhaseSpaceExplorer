@@ -655,7 +655,11 @@ class Gp:
             :return: (np array) the upscaled grid values
             """
 
-            if dsgrid.ndim == 1:
+            dsgrid = np.asarray(dsgrid)
+            usgrid = np.asarray(usgrid)
+            n_dim = 1 if dsgrid.ndim == 1 else dsgrid.shape[1]
+
+            if n_dim == 1:
                 # one-dimensional grid
                 x = dsgrid.reshape(-1)
                 order = np.argsort(x)
