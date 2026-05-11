@@ -12,7 +12,7 @@ import uuid
 
 def adjust_PSE_status():
     """
-    Aligns the Streamlit knowledge of the server status in st.session_state['jobs_status'] with the reality obtained
+    Aligns the Streamlit knowledge of the server status in st.session_state['pse_jobs_status'] with the reality obtained
     from a server get_status call.
     :return: (bool) whether to rerun the global Streamlit script
     """
@@ -21,24 +21,24 @@ def adjust_PSE_status():
 
     port = st.session_state['gp_server_port']
     status = communicate_get('/get_status', port).text
-    jstatus = st.session_state['jobs_status']
+    jstatus = st.session_state['pse_jobs_status']
 
     if 'failure' in status:
-        st.session_state['jobs_status'] = jstatus
+        st.session_state['pse_jobs_status'] = jstatus
         return False
 
     rerun_flag = False
 
     if jstatus == 'pending PSE startup' or jstatus == 'pending PSE resume':
         if status == 'running':
-            st.session_state['jobs_status'] = 'running'
+            st.session_state['pse_jobs_status'] = 'running'
         elif status == 'idle':
             # Wait in case startup was just initialized and check for status again. Testing this case is needed, if exit
             # condition is already met at startup (sufficient iterations measured). In this case, the status will not
             # change to 'running'.
             st.session_state['update_counter'] += 1
             if st.session_state['update_counter'] > 1:
-                st.session_state['jobs_status'] = 'idle'
+                st.session_state['pse_jobs_status'] = 'idle'
                 # reset optimization start/pause toggles
                 st.session_state['rpse_key'] = str(uuid.uuid4())
                 st.session_state['ppse_key'] = str(uuid.uuid4())
@@ -47,18 +47,18 @@ def adjust_PSE_status():
 
     elif jstatus == 'pending PSE pause':
         if status == 'idle':
-            st.session_state['jobs_status'] = 'paused'
+            st.session_state['pse_jobs_status'] = 'paused'
 
     elif jstatus == 'pending PSE shutdown':
         if status == 'idle':
-            st.session_state['jobs_status'] = 'idle'
+            st.session_state['pse_jobs_status'] = 'idle'
 
     # catches reruns of Streamlit scripts while the server continues in the background
     elif jstatus == 'idle' and status == 'running':
-        st.session_state['jobs_status'] = 'running'
+        st.session_state['pse_jobs_status'] = 'running'
 
     elif jstatus == 'running' and status == 'idle':
-        st.session_state['jobs_status'] = 'idle'
+        st.session_state['pse_jobs_status'] = 'idle'
         # reset optimization start/pause toggles
         st.session_state['rpse_key'] = str(uuid.uuid4())
         st.session_state['ppse_key'] = str(uuid.uuid4())
@@ -268,7 +268,7 @@ def start_stop_optimization(kwargs=None):
 
     col_opt_5, col_opt_6 = st.columns([1, 1])
     port = st.session_state['gp_server_port']
-    jstatus = st.session_state['jobs_status']
+    jstatus = st.session_state['pse_jobs_status']
 
     # find presets in case of first run
     if jstatus == 'running':
@@ -319,7 +319,7 @@ def start_stop_optimization(kwargs=None):
             else:
                 jstatus = 'failure - PSE resume'
 
-    st.session_state['jobs_status'] = jstatus
+    st.session_state['pse_jobs_status'] = jstatus
 
 
 def stop_pse(port):
@@ -345,9 +345,9 @@ def check_session_state():
     :return: no return value
     """
 
-    if 'jobs_status' not in st.session_state:
+    if 'pse_jobs_status' not in st.session_state:
         # valid job status values: pending, idle, running, failure, (down)
-        st.session_state['jobs_status'] = 'idle'
+        st.session_state['pse_jobs_status'] = 'idle'
 
 
         # Jobs status values for PSE
@@ -375,7 +375,7 @@ def check_session_state():
 @st.fragment
 def clear_project_data_dialog():
     st.info("Project directory: {}".format(st.session_state['pse_dir']))
-    if st.button('Clear Project Data', disabled=(st.session_state['jobs_status'] == 'running'),
+    if st.button('Clear Project Data', disabled=(st.session_state['pse_jobs_status'] == 'running'),
                  width='stretch'):
         clear_project_data()
 
@@ -386,7 +386,7 @@ def monitor():
     st.info('Server port: {}'.format(st.session_state['gp_server_port']))
     if adjust_PSE_status():
         st.rerun()
-    st.info('Job status: {}'.format(st.session_state['jobs_status']))
+    st.info('Job status: {}'.format(st.session_state['pse_jobs_status']))
 
     # List to store paths to .png files
     png_files = []
@@ -408,9 +408,9 @@ def monitor():
             st.text("Finished measurements:")
             st.dataframe(df_res_gpcam, hide_index=False, width='stretch')
 
-            if st.session_state['jobs_status'] == 'running':
+            if st.session_state['pse_jobs_status'] == 'running':
                 if df_res_gpcam.shape[0] >= st.session_state['gp_iterations']:
-                    st.session_state['jobs_status'] = 'idle'
+                    st.session_state['pse_jobs_status'] = 'idle'
         elif os.path.exists(res_path_grid):
             with open(res_path_grid, 'rb') as file:
                 res_grid = pickle.load(file)
@@ -514,7 +514,7 @@ def run_control(configuration, gp_discrete_points=None, kwargs=None):
         label="optimizer",
         options=opts,
         index=idx,
-        disabled=(st.session_state.jobs_status != 'idle')
+        disabled=(st.session_state.pse_jobs_status != 'idle')
     )
     st.session_state.cfg.optimizer = opt_optimizer
 
