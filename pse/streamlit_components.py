@@ -67,29 +67,41 @@ def adjust_PSE_status():
     return rerun_flag
 
 
-def clear_project_data():
+def clear_project_data(everything=False):
+    """
+    Deletes contents from the PSE directory. If everything is True, the entire directory content is deleted. Otherwise,
+    only the results and plots directories are removed.
+
+    :param everything: (bool) whether to delete the entire directory contents or only the results and plots directories.
+                        Defaults to False.
+    :return: No return value.
+    """
     def _rmdir(directory_path):
         # Check if the directory exists
-        if not os.path.exists(directory_path):
-            print(f"The directory '{directory_path}' does not exist.")
+        if not directory_path.is_dir():
+            print(f"The directory '{str(directory_path)}' is not a directory.")
             return
 
-        for entry in os.scandir(directory_path):
+        for entry in directory_path.iterdir():
             try:
                 if entry.is_file():
-                    os.remove(entry.path)  # Remove the file
+                    os.remove(entry)  # Remove the file
                 elif entry.is_dir():
-                    shutil.rmtree(entry.path)  # Remove the subdirectory and its contents
+                    shutil.rmtree(entry)  # Remove the subdirectory and its contents
             except Exception as e:
-                print(f"Failed to delete {entry.path}: {e}")
+                print(f"Failed to delete {entry}: {e}")
 
     project_dir = st.session_state['pse_dir']
     if project_dir is None:
         return
-    result_dir = os.path.join(project_dir, 'results')
-    plots_dir = os.path.join(project_dir, 'plots')
-    _rmdir(result_dir)
-    _rmdir(plots_dir)
+    project_dir = Path(project_dir).expanduser().resolve()
+    if everything:
+        _rmdir(project_dir)
+    else:
+        result_dir = project_dir / 'results'
+        plots_dir = project_dir / 'plots'
+        _rmdir(result_dir)
+        _rmdir(plots_dir)
 
 
 def communicate_post(endpoint, port, data):
@@ -373,11 +385,11 @@ def check_session_state():
 
 
 @st.fragment
-def clear_project_data_dialog():
+def clear_project_data_dialog(everything=False):
     st.info("Project directory: {}".format(st.session_state['pse_dir']))
     if st.button('Clear Project Data', disabled=(st.session_state['pse_jobs_status'] == 'running'),
                  width='stretch'):
-        clear_project_data()
+        clear_project_data(everything=everything)
 
 
 @st.fragment(run_every=60)
