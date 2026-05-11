@@ -257,6 +257,11 @@ class Gp:
         self.exp_par = exp_par
         # keep only rows that are being explored
         self.exp_par = self.exp_par[self.exp_par['optimize']]
+        if self.exp_par.empty:
+            raise ValueError(
+                "No optimization parameters selected. "
+                "At least one parameter must have optimize=True."
+            )
         columns_to_keep = ['name', 'type', 'value', 'lower_opt', 'upper_opt', 'step_opt']
         self.exp_par = self.exp_par[columns_to_keep]
 

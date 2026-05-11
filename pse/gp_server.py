@@ -71,8 +71,8 @@ class GpServer:
                 # call start PSE function as functionally a restart from Pause is only different in that the hardware
                 # is not being reiniatialized, which will be decided based on inside gp.py the 'paused' flag in the
                 # task_dict
-                self.pse_go(data, from_pause=True)
-            return "PSE resumed"
+                return self.pse_go(data, from_pause=True)
+            return "PSE was canceled"
         else:
             return "PSE was not paused."
 
@@ -95,8 +95,8 @@ class GpServer:
         # only start if no other thread is running
         data = self.check_post()
         self.task_dict['cancelled'] = False
-        self.pse_go(data, from_pause=False)
-        return "PSE started"
+        return self.pse_go(data, from_pause=False)
+
 
     def pse_go(self, data, from_pause=False):
         if 'client' in data:
@@ -111,11 +111,16 @@ class GpServer:
         return self.start_Gp_thread(data, from_pause=from_pause, gpobject=GpObject)
 
     def start_Gp_thread(self, data, from_pause=False, gpobject=None):
-        if from_pause:
-            # just reinitialize the object with updated arguments, keep inits from children untouched
-            GpParent.__init__(self.gpo, **data)
-        else:
-            self.gpo = gpobject(**data)
+        try:
+            if from_pause:
+                # just reinitialize the object with updated arguments, keep inits from children untouched
+                GpParent.__init__(self.gpo, **data)
+            else:
+                self.gpo = gpobject(**data)
+        except ValueError as e:
+            self.task_dict['cancelled'] = True
+            self.task_dict['progress'] = '100%'
+            return str(e)
 
         self.task_dict["progress"] = "0%"
         self.p = Thread(target=self.gpo.run, args=(self.task_dict, from_pause))
