@@ -388,7 +388,6 @@ def check_session_state():
 
 @st.fragment
 def clear_project_data_dialog(everything=False):
-
     col_pse_cpdd_1, col_pse_cpdd_2 = st.columns([3, 1])
     with col_pse_cpdd_1:
         st.info("Project directory: {}".format(st.session_state['pse_dir']))
