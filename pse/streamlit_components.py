@@ -10,6 +10,8 @@ import shutil
 import streamlit as st
 import uuid
 
+from roadmap_datamanager.gui.streamlit_components import file_browser_button
+
 def adjust_PSE_status():
     """
     Aligns the Streamlit knowledge of the server status in st.session_state['pse_jobs_status'] with the reality obtained
@@ -386,10 +388,15 @@ def check_session_state():
 
 @st.fragment
 def clear_project_data_dialog(everything=False):
-    st.info("Project directory: {}".format(st.session_state['pse_dir']))
-    if st.button('Clear Project Data', disabled=(st.session_state['pse_jobs_status'] == 'running'),
-                 width='stretch'):
-        clear_project_data(everything=everything)
+
+    col_pse_cpdd_1, col_pse_cpdd_2 = st.columns([3, 1])
+    with col_pse_cpdd_1:
+        st.info("Project directory: {}".format(st.session_state['pse_dir']))
+    with col_pse_cpdd_2:
+        file_browser_button(st.session_state['pse_dir'])
+        if st.button('Clear Project Data', disabled=(st.session_state['pse_jobs_status'] == 'running'),
+                     width='stretch'):
+            clear_project_data(everything=everything)
 
 
 @st.fragment(run_every=60)
