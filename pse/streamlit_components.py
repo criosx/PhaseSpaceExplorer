@@ -1,4 +1,5 @@
 import copy
+from datetime import datetime
 import json
 import numpy as np
 import os
@@ -11,6 +12,16 @@ import streamlit as st
 import uuid
 
 from roadmap_datamanager.gui.streamlit_components import file_browser_button
+
+def _copy_directory_contents(src_dir: Path, dst_dir: Path):
+    """Copy all files and folders inside src_dir into dst_dir."""
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    for src_item in src_dir.iterdir():
+        dst_item = dst_dir / src_item.name
+        if src_item.is_dir():
+            shutil.copytree(src_item, dst_item)
+        else:
+            shutil.copy2(src_item, dst_item)
 
 def adjust_PSE_status():
     """
@@ -386,7 +397,6 @@ def check_session_state():
         st.session_state['measurement_process'] = None
 
 
-@st.fragment
 def clear_project_data_dialog(everything=False):
     col_pse_cpdd_1, col_pse_cpdd_2 = st.columns([3, 1])
     with col_pse_cpdd_1:
@@ -396,6 +406,7 @@ def clear_project_data_dialog(everything=False):
         if st.button('Clear Project Data', disabled=(st.session_state['pse_jobs_status'] == 'running'),
                      width='stretch'):
             clear_project_data(everything=everything)
+            st.rerun()
 
 
 @st.fragment(run_every=60)
@@ -486,6 +497,58 @@ def monitor():
     if st.button('Update job monitor'):
         pass
 
+def pse_directory(identifier='PSE'):
+    clear_project_data_dialog(everything=True)
+
+    pse_dir = Path(st.session_state['pse_dir']).expanduser().resolve()
+    archive_root = pse_dir.parent
+    col_opt_a1, col_opt_a2 = st.columns([3, 1])
+    if (pse_dir / 'results').is_dir():
+        archive_name = col_opt_a1.text_input(
+            "Name of archive directory:",
+            value= identifier + " " + datetime.now().strftime("%Y_%m_%d"),
+        )
+        if archive_name.startswith(identifier):
+            archive_dir = archive_root / archive_name
+        else:
+            archive_dir = archive_root / (identifier + archive_name)
+
+        if archive_dir.is_dir():
+            col_opt_a1.info('Archive exists.')
+        if col_opt_a2.button("Create archive of optimization directory"):
+            if not archive_dir.is_dir():
+                shutil.copytree(str(Path(pse_dir)), archive_dir)
+                col_opt_a2.success('Optimization directory archived.')
+            else:
+                col_opt_a2.error("Not copied - Archive exists.")
+    else:
+        col_opt_a1.info("The optimization directory does not contain results.")
+
+        archives = sorted(
+            p for p in archive_root.iterdir()
+            if p.is_dir()
+            and p != pse_dir
+            and p.name.startswith(identifier + " Archive")
+        )
+
+        if archives:
+            col_opt_a3, col_opt_a4 = st.columns([3, 1])
+            archive_names = [p.name for p in archives]
+
+            archive_name = col_opt_a3.selectbox(
+                "Archive to restore",
+                archive_names,
+                index=None,
+                placeholder="Choose an archive...",
+                key="restore_archive_name",
+            )
+
+            if archive_name:
+                if col_opt_a4.button("Restore archive"):
+                    archive_dir = archive_root / archive_name
+
+                    _copy_directory_contents(archive_dir, pse_dir)
+                    col_opt_a4.success("Archive restored.")
 
 @st.fragment
 def parameter_input():

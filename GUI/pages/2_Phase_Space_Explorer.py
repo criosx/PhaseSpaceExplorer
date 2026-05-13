@@ -19,7 +19,10 @@ st.write("""
 # Setup
 """)
 with st.expander('Setup'):
-    streamlit_components.clear_project_data_dialog()
+    st.write("""
+    ## PSE Directory
+    """)
+    streamlit_components.pse_directory()
     st.write("""
     ## Parameters
     ### Model Fit
