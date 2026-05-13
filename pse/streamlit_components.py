@@ -9,6 +9,7 @@ import pickle
 import requests
 import shutil
 import streamlit as st
+import time
 import uuid
 
 from roadmap_datamanager.gui.streamlit_components import file_browser_button
@@ -497,18 +498,28 @@ def monitor():
     if st.button('Update job monitor'):
         pass
 
-def pse_directory(identifier='PSE'):
+def pse_directory(identifier='PSE', st_directory_identifier='pse_dir'):
+    """
+    Implements a working directory archival and restoration dialog.
+
+    :param identifier:              (str) The leading string of the name of any archive directory such as 'PSE' or 'SANS
+                                    Optimization Directory'. The archive will then be created with a name that starts
+                                    with that string and adds ' archive' plus any user input.
+    :param st_directory_identifier: (str) The st.session_state key under which the path to the optimizatin directory is
+                                    stored.
+    :return:                        no return value
+    """
     clear_project_data_dialog(everything=True)
 
-    pse_dir = Path(st.session_state['pse_dir']).expanduser().resolve()
+    pse_dir = Path(st.session_state[st_directory_identifier]).expanduser().resolve()
     archive_root = pse_dir.parent
     col_opt_a1, col_opt_a2 = st.columns([3, 1])
     if (pse_dir / 'results').is_dir():
         archive_name = col_opt_a1.text_input(
             "Name of archive directory:",
-            value= identifier + " " + datetime.now().strftime("%Y_%m_%d"),
+            value= identifier + " archive " + datetime.now().strftime("%Y_%m_%d"),
         )
-        if archive_name.startswith(identifier):
+        if archive_name.startswith(identifier + ' archive'):
             archive_dir = archive_root / archive_name
         else:
             archive_dir = archive_root / (identifier + archive_name)
@@ -528,7 +539,7 @@ def pse_directory(identifier='PSE'):
             p for p in archive_root.iterdir()
             if p.is_dir()
             and p != pse_dir
-            and p.name.startswith(identifier + " Archive")
+            and p.name.startswith(identifier + " archive")
         )
 
         if archives:
@@ -549,6 +560,8 @@ def pse_directory(identifier='PSE'):
 
                     _copy_directory_contents(archive_dir, pse_dir)
                     col_opt_a4.success("Archive restored.")
+                    time.sleep(1)
+                    st.rerun()
 
 @st.fragment
 def parameter_input():
