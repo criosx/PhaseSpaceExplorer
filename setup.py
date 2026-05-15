@@ -8,5 +8,9 @@ setup(
     license='MIT',
     author='Frank Heinrich',
     author_email='fheinrich@cmu.edu',
-    description='GP and Gridsearch Phase Space Exploration'
+    description='GP and Gridsearch Phase Space Exploration',
+    install_requires=[
+        'aio-pika>=9.0',
+        'roadmap-broker-client',
+    ],
 )

@@ -2,6 +2,7 @@ from contextlib import closing
 from flask import Flask
 from flask import abort, request
 from pse.gp import Gp as GpParent
+from pse.broker_worker import BrokerGp, PSEBrokerWorker
 from threading import Thread
 import socket
 import sys
@@ -17,6 +18,8 @@ class GpServer:
             'cancelled': True,
             'paused': False,
         }
+        self._broker = PSEBrokerWorker()
+        self._broker.start()
         self.app = Flask(__name__)
         # add routes
         self.add_routes()
@@ -99,24 +102,19 @@ class GpServer:
 
 
     def pse_go(self, data, from_pause=False):
-        if 'client' in data:
-            if data['client'] == 'ROADMAP':
-                from pse.roadmap import ROADMAP_Gp as GpObject
-            elif data['client'] == 'Test Ackley Function':
-                from pse.gp import Gp as GpObject
-            del data['client']
-        else:
-            from pse.roadmap import ROADMAP_Gp as GpObject
+        # 'client' key no longer used — BrokerGp is the only implementation.
+        data.pop('client', None)
 
         return self.start_Gp_thread(data, from_pause=from_pause, gpobject=GpObject)
 
     def start_Gp_thread(self, data, from_pause=False, gpobject=None):
         try:
             if from_pause:
-                # just reinitialize the object with updated arguments, keep inits from children untouched
+                # Reinitialise base Gp state with updated args; BrokerGp-specific
+                # state (_broker, _channel_pool, etc.) is preserved from the paused run.
                 GpParent.__init__(self.gpo, **data)
             else:
-                self.gpo = gpobject(**data)
+                self.gpo = BrokerGp(broker_worker=self._broker, **data)
         except ValueError as e:
             self.task_dict['cancelled'] = True
             self.task_dict['progress'] = '100%'
