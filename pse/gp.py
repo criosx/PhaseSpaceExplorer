@@ -562,9 +562,13 @@ class Gp:
                             break
                 self.work_on_iteration(next_point, self.gpiteration)
                 self.gpiteration += 1
+            else:
+                # nothing to do
+                time.sleep(5)
 
+        #
         printed = False
-        while (len(self.measurement_inprogress) == self.gpcam_init_dataset_size and
+        while (len(self.measurement_inprogress) == self.parallel_measurements and
                not self.task_dict['cancelled'] and not self.task_dict['paused']):
             if not printed:
                 print('Waiting for at least one measurement to finish.')
