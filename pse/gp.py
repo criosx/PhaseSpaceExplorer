@@ -566,7 +566,7 @@ class Gp:
                 # nothing to do
                 time.sleep(5)
 
-        #
+        # wait for at least one measurement to finished if currently all parallel capacity in use
         printed = False
         while (len(self.measurement_inprogress) == self.parallel_measurements and
                not self.task_dict['cancelled'] and not self.task_dict['paused']):
