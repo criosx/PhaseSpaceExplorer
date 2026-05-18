@@ -514,6 +514,7 @@ def pse_directory(identifier:str='PSE', st_directory_identifier:str='pse_dir'):
             if archive_name:
                 if col_opt_a4.button("Restore archive"):
                     archive_dir = archive_root / archive_name
+                    clear_project_data(everything=True)
                     _copy_directory_contents(archive_dir, pse_dir)
                     # reload PSE-related config entries
                     cfg.load_subset(path=archive_dir / 'config.json', groups=("pse",))
