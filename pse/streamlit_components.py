@@ -1,6 +1,4 @@
-import copy
 from datetime import datetime
-import json
 import numpy as np
 import os
 import pandas
@@ -13,6 +11,9 @@ import time
 import uuid
 
 from roadmap_datamanager.gui.streamlit_components import file_browser_button
+
+import pse.configuration
+
 
 def _copy_directory_contents(src_dir: Path, dst_dir: Path):
     """Copy all files and folders inside src_dir into dst_dir."""
@@ -151,34 +152,6 @@ def communicate_get(endpoint, port):
     print(response, response.text)
     return response
 
-
-def load_session_state(folder):
-    file_path = os.path.join(folder, 'pse_parameters.pkl')
-    if os.path.exists(file_path):
-        print('trying to load pse_paramters.pkl')
-        with open(file_path, 'rb') as f:
-            st.session_state['opt_pars'] = pickle.load(f)
-        st.session_state['opt_pars_original'] = st.session_state['opt_pars']
-        print('loaded pse_paramters.pkl')
-        print(st.session_state['opt_pars_original'])
-    else:
-        # create new session
-        project_dir = Path(st.session_state['pse_dir']).expanduser().resolve()
-        result_dir = project_dir / 'results'
-        result_dir.mkdir(parents=True, exist_ok=True)
-        plots_dir = project_dir / 'plots'
-        plots_dir.mkdir(parents=True, exist_ok=True)
-
-        # TODO implement parameter data frame initializion
-        df_opt_pars = {'name': ['lipid1', 'lipid2', 'lipid3', 'lipid concentration'],
-                       'type': ['compound', 'compound', 'compound', 'parameter'], 'value': [1.0, 1.0, 1.0, 5.0],
-                       'lower_opt': 0.0, 'upper_opt': 1.0, 'optimize': False, 'step_opt': 0.01}
-        st.session_state['opt_pars_original'] = df_opt_pars
-        st.session_state['opt_pars'] = df_opt_pars
-
-        save_session_state(project_dir)
-
-
 def pause_pse(port):
     """
     Pauses the Gaussian Process phase space exploration, PSE (also supports grid search). Results are
@@ -248,17 +221,6 @@ def run_pse(port, **kwargs):
         return False
 
     return True
-
-
-def save_session_state(folder):
-    # save only pse parameters so far
-    file_path = os.path.join(folder, 'pse_parameters.pkl')
-    with open(file_path, 'wb') as f:
-        pickle.dump(st.session_state['opt_pars'], f)
-    # also save a json record
-    path_name = os.path.join(folder, 'pse_parameters.json')
-    with open(path_name, 'w') as file:
-        json.dump(st.session_state['opt_pars'], file)
 
 
 def start_stop_optimization(kwargs=None):
@@ -364,17 +326,18 @@ def stop_pse(port):
 
 
 # --------------  components ---------------------
-@st.fragment
-def check_session_state():
+def start_of_script_business():
     """
     Checks the state of session variables at the beginning of the script and initializes them if necessary.
     :return: no return value
     """
+    if not st.session_state["data_folders_ready"]:
+        st.info("Files and Folders not set up. Please visit the File System tab.")
+        st.stop()
 
     if 'pse_jobs_status' not in st.session_state:
         # valid job status values: pending, idle, running, failure, (down)
         st.session_state['pse_jobs_status'] = 'idle'
-
 
         # Jobs status values for PSE
         # down - no answer from server
@@ -388,14 +351,8 @@ def check_session_state():
         # pending PSE pause -
         # pending PSE resume -
 
-        load_session_state(st.session_state['pse_dir'])
-
-    if 'widget_key' not in st.session_state:
-        st.session_state['widget_key'] = str(uuid.uuid4())
-    if 'gp_iterations' not in st.session_state:
-        st.session_state['gp_iterations'] = 50
-    if 'measurement_process' not in st.session_state:
-        st.session_state['measurement_process'] = None
+        # we are running the script the first time, and have reloaded the configuration
+        st.session_state['configuration_reloaded'] = True
 
 
 def clear_project_data_dialog(everything=False):
@@ -408,7 +365,6 @@ def clear_project_data_dialog(everything=False):
                      width='stretch'):
             clear_project_data(everything=everything)
             st.rerun()
-
 
 @st.fragment(run_every=60)
 def monitor():
@@ -498,7 +454,7 @@ def monitor():
     if st.button('Update job monitor'):
         pass
 
-def pse_directory(identifier='PSE', st_directory_identifier='pse_dir'):
+def pse_directory(identifier:str='PSE', st_directory_identifier:str='pse_dir'):
     """
     Implements a working directory archival and restoration dialog.
 
@@ -513,6 +469,8 @@ def pse_directory(identifier='PSE', st_directory_identifier='pse_dir'):
 
     pse_dir = Path(st.session_state[st_directory_identifier]).expanduser().resolve()
     archive_root = pse_dir.parent
+    cfg: pse.configuration.DataManagerConfig = st.session_state['cfg']   # configuration
+
     col_opt_a1, col_opt_a2 = st.columns([3, 1])
     if (pse_dir / 'results').is_dir():
         archive_name = col_opt_a1.text_input(
@@ -526,12 +484,11 @@ def pse_directory(identifier='PSE', st_directory_identifier='pse_dir'):
 
         if archive_dir.is_dir():
             col_opt_a1.info('Archive exists.')
-        if col_opt_a2.button("Create archive of optimization directory"):
-            if not archive_dir.is_dir():
+        if col_opt_a2.button("Create archive of optimization directory", disabled=archive_dir.is_dir()):
                 shutil.copytree(str(Path(pse_dir)), archive_dir)
+                # save subset of configuration data class members to the archive dir
+                cfg.save_subset(path=archive_dir / 'config.json', groups=("pse",))
                 col_opt_a2.success('Optimization directory archived.')
-            else:
-                col_opt_a2.error("Not copied - Archive exists.")
     else:
         col_opt_a1.info("The optimization directory does not contain results.")
 
@@ -557,18 +514,31 @@ def pse_directory(identifier='PSE', st_directory_identifier='pse_dir'):
             if archive_name:
                 if col_opt_a4.button("Restore archive"):
                     archive_dir = archive_root / archive_name
-
                     _copy_directory_contents(archive_dir, pse_dir)
+                    # reload PSE-related config entries
+                    cfg.load_subset(path=archive_dir / 'config.json', groups=("pse",))
+                    st.session_state['configuration_reloaded'] = True
                     col_opt_a4.success("Archive restored.")
                     time.sleep(1)
                     st.rerun()
 
 @st.fragment
 def parameter_input():
-    df_opt_pars = copy.deepcopy(st.session_state['opt_pars_original'])
+    if st.session_state.configuration_reloaded:
+        st.session_state['pse_input_widget_key'] = uuid.uuid4()
+        if st.session_state.cfg.pse_opt_pars:
+            df_opt_pars = pandas.DataFrame(st.session_state.cfg.pse_opt_pars)
+            st.session_state['opt_pars_original'] = df_opt_pars
+    if 'opt_pars_original' not in st.session_state:
+        # TODO implement parameter data frame initializion
+        df_opt_pars = {'name': ['lipid1', 'lipid2', 'lipid3', 'lipid concentration'],
+                       'type': ['compound', 'compound', 'compound', 'parameter'], 'value': [1.0, 1.0, 1.0, 5.0],
+                       'lower_opt': 0.0, 'upper_opt': 1.0, 'optimize': False, 'step_opt': 0.01}
+        st.session_state['opt_pars_original'] = pandas.DataFrame(df_opt_pars)
+    df_opt_pars_original = st.session_state['opt_pars_original']
     parameters_edited = st.data_editor(
-        df_opt_pars,
-        key=st.session_state['widget_key'],
+        df_opt_pars_original,
+        key=st.session_state['pse_input_widget_key'],
         disabled=["_index"],
         num_rows='dynamic',
         column_order=["name", "type", "value", "optimize", "lower_opt", "upper_opt",
@@ -587,7 +557,7 @@ def parameter_input():
         }
     )
     st.session_state['opt_pars'] = parameters_edited
-    save_session_state(st.session_state['pse_dir'])
+    st.session_state.cfg.pse_opt_pars = parameters_edited.to_dict(orient='records')
 
 def run_control(configuration, gp_discrete_points=None, kwargs=None):
     """
@@ -661,4 +631,8 @@ def run_control(configuration, gp_discrete_points=None, kwargs=None):
 
     start_stop_optimization(kwargs)
 
-
+def end_of_script_business():
+    cfg: pse.configuration.DataManagerConfig = st.session_state.cfg
+    cfg.save_subset(st.session_state['pse_dir'] / 'config.json', groups=('pse',))
+    cfg.save()
+    st.session_state['configuration_reloaded'] = False

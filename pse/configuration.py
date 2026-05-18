@@ -38,6 +38,10 @@ class DataManagerConfig(BaseConfig):
         default = 1,
         metadata={"config_groups": ["pse"]}
     )
+    pse_opt_pars: dict = field(
+        default_factory = dict,
+        metadata={"config_groups": ["pse"]}
+    )
 
 def load_persistent_cfg() -> DataManagerConfig:
     config_cls = DataManagerConfig

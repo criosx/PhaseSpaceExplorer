@@ -3,11 +3,7 @@ import streamlit as st
 from pse import streamlit_components
 from pse import configuration
 
-if not st.session_state["data_folders_ready"]:
-    st.info("Files and Folders not set up. Please visit the File System tab.")
-    st.stop()
-
-streamlit_components.check_session_state()
+streamlit_components.start_of_script_business()
 
 st.write("""
 # Job Monitor
@@ -42,3 +38,5 @@ st.write("""
 # Run Control
 """)
 streamlit_components.run_control(configuration=configuration, kwargs=kwargs)
+
+streamlit_components.end_of_script_business()
