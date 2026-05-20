@@ -957,19 +957,23 @@ class Gp:
                              ylabel='information gain / hyperparameter', trace_label=hypar_cols, yscale='symlog',
                              legend_loc='upper left')
 
-    def run(self, task_dict, from_pause=False):
+    def run(self, task_dict=None, from_pause=False):
         """
         Runs the PSE algorithm. Parameters are provided in the task_dict dictionary.
+        :param from_pause: wheter to resume the Gp
         :param task_dict: (dict) A dictionary containing the parameters to be passed to the PSE algorithm.
         :return: (bool) True if the algorithm ran succesfully, False otherwise.
         """
         self.task_dict = task_dict
+        if self.task_dict is None:
+            self.task_dict={
+                'cancelled': False
+            }
+        if 'paused' not in self.task_dict:
+            self.task_dict['paused'] = False
 
         if self.optimizer != 'grid' and self.optimizer != 'gpcam':
             self.task_dict['status'] = 'failure - optimization method not implemented'
-
-        if 'paused' not in self.task_dict:
-            self.task_dict['paused'] = False
 
         if not from_pause:
             # only intialize hardware if PSE was not paused before since hardware would already be initialized
