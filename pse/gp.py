@@ -202,9 +202,10 @@ class Gp:
         :param gp_discrete_points: (ndarray or list) of shape V x D, where D is the length of the input vector that
                                    defines the grid of possible measurement points. If gp_discrete points is provided,
                                    there still needs to be an exp_par dataframe for plotting and naming.
-                                   (string) If a string is provided, this is interpreted as a filenam of a json
+                                   (string) If a string is provided, this is interpreted as a filenam of a JSON
                                    file that contains the discrete points, if the string value is 'default file', the
                                    default filename /evaluation_points.json is used.
+                                   (None) Discrete points are not used.
         :param resume: (bool, default False) loads previous results from the storage path.
         :param signal_estimate: (float) estimated max signal (max - min) for gp hyperparameter setting
         """
@@ -304,17 +305,17 @@ class Gp:
                     self.gpcam_load_discrete_evaluation_points(gp_discrete_points)
                 else:
                     self.gp_discrete_points = gp_discrete_points
+                    # save discrete points for later reuse if not loaded from file
+                    self.gpcam_save_discrete_evaluation_points()
+                self.gp_evaluation_points = self.gp_discrete_points
             else:
+                self.gp_discrete_points = None
                 grids = np.meshgrid(*self.axes, indexing='ij')
-                self.gp_discrete_points = np.stack(grids, axis=-1).reshape(-1, len(self.axes))
+                self.gp_evaluation_points = np.stack(grids, axis=-1).reshape(-1, len(self.axes))
                 # make this numpy array into a list of numpy arrays along axis 0
                 # This is mainly for GPOptimizer.ask(), which requires a list of 1d-numpy arrays for non-Eucledian
                 # inputs
-                self.gp_discrete_points = [self.gp_discrete_points[i] for i in range(self.gp_discrete_points.shape[0])]
-
-            # save discrete points for later reuse if not loaded from file
-            if not isinstance(gp_discrete_points, str):
-                self.gpcam_save_discrete_evaluation_points()
+                # self.gp_discrete_points = [self.gp_discrete_points[i] for i in range(self.gp_discrete_points.shape[0])]
 
             self.hyper_bounds = None
 
@@ -543,7 +544,7 @@ class Gp:
                 collect_measurement(gpcam_initialized=False)
             elif len(self.measurement_inprogress) < self.parallel_measurements:
                 print(f'Preparing initial measurement #{self.gpiteration}.')
-                if self.gpiteration == 0:
+                if self.gpiteration == 0 and self.gp_discrete_points is not None:
                     next_point = self.gp_discrete_points[0]
                 else:
                     # Get in-progress measurement points and stream points
@@ -557,9 +558,12 @@ class Gp:
                         used_points = meas_points if meas_points is not None else stream_points
                     # Try up to 10 times to find an unused point
                     for _ in range(10):
-                        next_point = self.gp_discrete_points[np.random.randint(len(self.gp_discrete_points))]
+                        # pick a random point from the evaluation points, which exist whether discrete points were
+                        # given or not
+                        next_point = self.gp_evaluation_points[np.random.randint(len(self.gp_evaluation_points))]
                         if used_points is None or not np.any(np.all(used_points == next_point, axis=1)):
                             break
+
                 self.work_on_iteration(next_point, self.gpiteration)
                 self.gpiteration += 1
             else:
@@ -602,8 +606,12 @@ class Gp:
 
                 submit_counter = 0
                 for i in range(n_max):
+                    if self.gp_discrete_points is not None:
+                        input_set = self.gp_discrete_points
+                    else:
+                        input_set = np.array([(self.axes[i][0], self.axes[i][-1]) for i in range(len(self.axes))])
                     next_points = self.my_ae.ask(
-                        self.gp_discrete_points,
+                        input_set=input_set,
                         n=n_max,
                         method='global',
                         acquisition_function=self.acq_func,
@@ -690,14 +698,7 @@ class Gp:
 
             return usvalues
 
-        # Only use discrete points for prediction and plotting.
-        # TODO: In case we want to allow defining the parameter space by boundaries, use the the commented out code
-        #   instead.
-
-        # mesh = np.meshgrid(*self.axes, indexing='ij')
-        # stacked = np.stack(mesh, axis=-1)
-        # prediction_positions = np.array(stacked.reshape(-1, len(self.axes)), dtype=np.float32)
-        prediction_positions = np.array(self.gp_discrete_points, dtype=np.float32)
+        prediction_positions = self.gp_evaluation_points
 
         # Use sparse prediction points for variance and mutual information
         n = prediction_positions.shape[0]
@@ -930,9 +931,9 @@ class Gp:
                 support_points = None
 
             if len(self.axes) > 1:
-                interp = LinearNDInterpolator(self.gp_discrete_points, self.prediction_gpcam)
+                interp = LinearNDInterpolator(self.gp_evaluation_points, self.prediction_gpcam)
             else:
-                interp = interp1d(np.array(self.gp_discrete_points).squeeze(), self.prediction_gpcam, fill_value=np.nan,
+                interp = interp1d(np.array(self.gp_evaluation_points).squeeze(), self.prediction_gpcam, fill_value=np.nan,
                                   bounds_error=False, kind='linear')
 
             mesh = np.meshgrid(*self.axes, indexing='ij')
