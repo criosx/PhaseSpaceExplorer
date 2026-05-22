@@ -727,10 +727,43 @@ class Gp:
             json.dump(packed, file)
 
     def gpcam_train(self, method='mcmc'):
-        # following line to avoid bounds errors
-        # print('Original hyperparameters: ', self.my_ae.hyperparameters)
-        self.my_ae.set_hyperparameters(np.clip(self.my_ae.hyperparameters, self.hyper_bounds[:, 0],
-                                               self.hyper_bounds[:, 1]))
+        def _hyperparameters_inside_bounds(hyperparameters, bounds, rel_eps=1e-12):
+            """
+            Return hyperparameters safely inside finite bounds.
+
+            This avoids failures in optimizers that internally rescale parameters to
+            [0, 1] and then reject tiny floating-point excursions outside that range.
+            Values exactly on a finite lower or upper bound are nudged inward by a
+            small relative amount. Infinite bounds, if ever used, are left unchanged.
+            """
+            hyperparameters = np.asarray(hyperparameters, dtype=float)
+            bounds = np.asarray(bounds, dtype=float)
+
+            lower = bounds[:, 0]
+            upper = bounds[:, 1]
+            width = upper - lower
+
+            safe_lower = np.where(
+                np.isfinite(lower) & np.isfinite(width),
+                lower + rel_eps * width,
+                lower,
+            )
+            safe_upper = np.where(
+                np.isfinite(upper) & np.isfinite(width),
+                upper - rel_eps * width,
+                upper,
+            )
+
+            return np.minimum(np.maximum(hyperparameters, safe_lower), safe_upper)
+
+        # SciPy's differential_evolution rescales x0 into [0, 1] internally.
+        # If a hyperparameter sits exactly on a bound, floating-point roundoff can
+        # produce a tiny value such as -1e-16 after scaling, which SciPy treats as
+        # outside the bounds.  Therefore, nudge hyperparameters slightly inside the
+        # open interval before training instead of clipping exactly to the bounds.
+        self.my_ae.set_hyperparameters(
+            _hyperparameters_inside_bounds(self.my_ae.hyperparameters, self.hyper_bounds)
+        )
         # print('New hyperparameters: ', self.my_ae.hyperparameters)
         self.my_ae.train(
             hyperparameter_bounds=self.hyper_bounds,
