@@ -1,28 +1,33 @@
-"""Unit tests for PSE broker_worker.py.
+"""Unit tests for PSE broker_worker.py — Phase 2 Step C.
 
-No RabbitMQ required — PSEBrokerWorker's async loop is never started.
-BrokerGp is exercised by injecting a mock broker whose publish_run_trial
-side-effect immediately resolves the trial.
+No RabbitMQ required.  PSEBrokerWorker's async loop is never started.
+PSEPointService GP internals (GPOptimizer, gpCAMstream, exp_par) are mocked
+so no gpcam initialisation is needed.
 
 Tests:
-  _unpack_result   — float, dict, failure, unexpected format
-  do_measurement   — success, failure, timeout, channel returned on timeout
+  PSEPointService       — request_point, submit_result, cancel_trial,
+                          notify_in_flight, phantom-tell, duplicate prevention
+  PSEBrokerWorker       — command dispatch (_handle_request_point,
+                          _handle_submit_result, _handle_cancel_trial,
+                          _handle_notify_in_flight), set_service guard,
+                          paused flag, emit shape
   _filter_discrete_points — placeholder returns all points and logs warning
-  PSEBrokerWorker  — register_trial / pop_result isolation
 """
 
+import asyncio
 import threading
-from queue import Queue
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import numpy as np
 import pandas as pd
 import pytest
 
-from pse.broker_worker import BrokerGp, PSEBrokerWorker
+from pse.broker_worker import PSEBrokerWorker, PSEPointService
 
 
 # ---------------------------------------------------------------------------
-# Shared fixtures
+# Helpers
 # ---------------------------------------------------------------------------
 
 EXP_PAR = pd.DataFrame([
@@ -30,212 +35,189 @@ EXP_PAR = pd.DataFrame([
         "name": "DOPC", "type": "compound", "value": 0.0,
         "lower_opt": 0.0, "upper_opt": 0.3, "step_opt": 0.1, "optimize": True,
     },
+    {
+        "name": "DPPC", "type": "compound", "value": 0.0,
+        "lower_opt": 0.0, "upper_opt": 0.3, "step_opt": 0.1, "optimize": True,
+    },
 ])
 
 
-def make_entry():
-    return {
-        "parameter names": ["DOPC"],
-        "position": [0.1],
-        "itlabel": 0,
-        "value": None,
-        "variance": None,
-    }
+def make_service() -> PSEPointService:
+    """Return a PSEPointService with GP internals mocked out.
 
-
-def make_mock_broker(protocol_result=None, success=True, set_event=True):
-    """Return a mock PSEBrokerWorker that resolves trials synchronously.
-
-    publish_run_trial stores the result and sets the threading.Event created
-    by register_trial, so do_measurement unblocks immediately.
+    The mock GPOptimizer returns deterministic values so request_point()
+    exercises the real in-flight / phantom-tell logic without touching gpcam.
     """
-    broker = MagicMock(spec=PSEBrokerWorker)
-    _events: dict[str, threading.Event] = {}
-    _results: dict[str, dict] = {}
+    service = PSEPointService.__new__(PSEPointService)
+    service._lock = threading.Lock()
+    service._paused = False
+    service._in_flight: dict = {}
+    service.gpiteration = 0
+    service.exp_par = EXP_PAR
+    service.acq_func = MagicMock()
+    service.gp_discrete_points = [[0.1, 0.0], [0.2, 0.1], [0.3, 0.2]]
+    service.signal_estimate = 1.0
+    service.gpcam_init_dataset_size = 5
+    service.train_global_every = 10
+    service.gpcam_iterations = 100
 
-    if success:
-        payload = {
-            "result": {"protocol_result": protocol_result},
-            "channel": 0,
-        }
-    else:
-        payload = {"error": "method failed", "channel": 0}
+    # Mock methods that touch disk / real GP
+    service.gpcam_init_ae = MagicMock()
+    service.gpcam_train = MagicMock()
+    service.gpcam_prediction = MagicMock()
+    service.plot_results = MagicMock()
+    service.results_io = MagicMock()
+    service.iterations_inprogress_save_to_file = MagicMock()
+    service.gp_hardware_shutdown = MagicMock()
 
-    def fake_register(trial_id):
-        event = threading.Event()
-        _events[trial_id] = event
-        return event
+    # Mock GPOptimizer (my_ae)
+    ae = MagicMock()
+    ae.ask.return_value = {"x": [np.array([0.15, 0.05])]}
+    ae.posterior_mean.return_value = {"m(x)": np.array([0.5])}
+    ae.posterior_covariance.return_value = {"v(x)": np.array([0.01])}
+    ae.tell = MagicMock()
+    service.my_ae = ae
 
-    def fake_publish(trial_id, **kwargs):
-        _results[trial_id] = {"success": success, "payload": payload}
-        if set_event:
-            _events[trial_id].set()
+    # Mock gpCAMstream as an append-able list-like
+    service.gpCAMstream = MagicMock()
+    service.gpCAMstream.__len__ = MagicMock(return_value=2)
 
-    broker.register_trial.side_effect = fake_register
-    broker.publish_run_trial.side_effect = fake_publish
-    broker.pop_result.side_effect = lambda tid: _results.pop(tid, {})
+    service.task_dict = {"cancelled": False, "paused": False, "progress": "0%", "status": "running"}
 
-    return broker
-
-
-def make_broker_gp(broker, tmp_path, channels=None, trial_timeout=60.0):
-    return BrokerGp(
-        broker_worker=broker,
-        protocol_id="test-proto",
-        channels=channels,
-        trial_timeout=trial_timeout,
-        exp_par=EXP_PAR,
-        storage_path=str(tmp_path),
-        optimizer="gpcam",
-        resume=False,
-    )
+    return service
 
 
 # ---------------------------------------------------------------------------
-# _unpack_result
+# PSEPointService — request_point
 # ---------------------------------------------------------------------------
 
-class TestUnpackResult:
+class TestRequestPoint:
 
-    def _make_gp_with_result(self, tmp_path, trial_id, stored):
-        broker = MagicMock(spec=PSEBrokerWorker)
-        broker.pop_result.return_value = stored
-        gp = make_broker_gp(broker, tmp_path)
-        return gp
+    def test_returns_trial_id_and_params(self):
+        service = make_service()
+        trial_id, params = service.request_point()
 
-    def test_plain_float(self, tmp_path):
-        gp = self._make_gp_with_result(tmp_path, "tid", {
-            "success": True,
-            "payload": {"result": {"protocol_result": -12.5}},
-        })
-        value, variance = gp._unpack_result("tid", 0)
-        assert value == -12.5
-        assert variance is None
+        assert isinstance(trial_id, str) and len(trial_id) == 36  # UUID
+        assert set(params.keys()) == {"DOPC", "DPPC"}
+        assert all(isinstance(v, float) for v in params.values())
 
-    def test_dict_with_value_and_variance(self, tmp_path):
-        gp = self._make_gp_with_result(tmp_path, "tid", {
-            "success": True,
-            "payload": {"result": {"protocol_result": {"value": -8.3, "variance": 1.5}}},
-        })
-        value, variance = gp._unpack_result("tid", 0)
-        assert value == pytest.approx(-8.3)
-        assert variance == pytest.approx(1.5)
+    def test_registers_in_flight(self):
+        service = make_service()
+        trial_id, _ = service.request_point()
+        assert trial_id in service._in_flight
 
-    def test_failure_returns_none(self, tmp_path):
-        gp = self._make_gp_with_result(tmp_path, "tid", {
-            "success": False,
-            "payload": {"error": "formulation_infeasible"},
-        })
-        value, variance = gp._unpack_result("tid", 0)
-        assert value is None
-        assert variance is None
+    def test_increments_gpiteration(self):
+        service = make_service()
+        service.request_point()
+        assert service.gpiteration == 1
 
-    def test_unexpected_format_returns_none(self, tmp_path):
-        gp = self._make_gp_with_result(tmp_path, "tid", {
-            "success": True,
-            "payload": {"result": {"protocol_result": "oops a string"}},
-        })
-        value, variance = gp._unpack_result("tid", 0)
-        assert value is None
-        assert variance is None
+    def test_phantom_tell_called(self):
+        service = make_service()
+        service.request_point()
+        assert service.my_ae.tell.called
+
+    def test_two_concurrent_requests_call_ask_twice(self):
+        """Each request_point acquires the lock, so two sequential calls both ask."""
+        service = make_service()
+        tid1, _ = service.request_point()
+        tid2, _ = service.request_point()
+        assert tid1 != tid2
+        assert service.my_ae.ask.call_count == 2
+
+    def test_raises_if_not_initialized(self):
+        service = make_service()
+        service.my_ae = None  # simulate uninitialized
+        with pytest.raises(RuntimeError, match="initialize"):
+            service.request_point()
 
 
 # ---------------------------------------------------------------------------
-# do_measurement
+# PSEPointService — submit_result
 # ---------------------------------------------------------------------------
 
-class TestDoMeasurement:
+class TestSubmitResult:
 
-    def test_success_float(self, tmp_path):
-        broker = make_mock_broker(protocol_result=-10.0)
-        gp = make_broker_gp(broker, tmp_path)
-        q = Queue()
-        entry = make_entry()
+    def test_removes_from_in_flight(self):
+        service = make_service()
+        trial_id, _ = service.request_point()
+        service.submit_result(trial_id, -12.5, None)
+        assert trial_id not in service._in_flight
 
-        value, variance = gp.do_measurement({"DOPC": 0.1}, 0, entry, q)
+    def test_updates_gpCAMstream(self):
+        service = make_service()
+        trial_id, _ = service.request_point()
+        service.submit_result(trial_id, -8.0, 0.5)
+        service.gpCAMstream.loc.__setitem__.assert_called_once()
 
-        assert value == pytest.approx(-10.0)
-        assert variance is None
-        assert entry["value"] == pytest.approx(-10.0)
-        assert not q.empty()
+    def test_uses_default_variance_when_none(self):
+        service = make_service()
+        trial_id, _ = service.request_point()
+        service.submit_result(trial_id, 1.0, None)
+        # signal_estimate is 1.0 → default variance is 1e-6
+        _, call_kwargs = service.gpCAMstream.loc.__setitem__.call_args
+        # variance field in the row
+        row = service.gpCAMstream.loc.__setitem__.call_args[0][1]
+        assert row["variance"] == pytest.approx(1e-6)
 
-    def test_success_dict(self, tmp_path):
-        broker = make_mock_broker(protocol_result={"value": -5.0, "variance": 2.0})
-        gp = make_broker_gp(broker, tmp_path)
-        q = Queue()
+    def test_ignores_unknown_trial_id(self):
+        service = make_service()
+        service.submit_result("nonexistent", 1.0, None)
+        service.gpCAMstream.loc.__setitem__.assert_not_called()
 
-        value, variance = gp.do_measurement({"DOPC": 0.1}, 0, make_entry(), q)
+    def test_reinitialises_ae_after_submit(self):
+        service = make_service()
+        trial_id, _ = service.request_point()
+        service.submit_result(trial_id, 2.0, None)
+        assert service.gpcam_init_ae.called
 
-        assert value == pytest.approx(-5.0)
-        assert variance == pytest.approx(2.0)
 
-    def test_failure_returns_none(self, tmp_path):
-        broker = make_mock_broker(success=False)
-        gp = make_broker_gp(broker, tmp_path)
-        q = Queue()
-        entry = make_entry()
+# ---------------------------------------------------------------------------
+# PSEPointService — cancel_trial
+# ---------------------------------------------------------------------------
 
-        value, variance = gp.do_measurement({"DOPC": 0.1}, 0, entry, q)
+class TestCancelTrial:
 
-        assert value is None
-        assert variance is None
-        assert entry["value"] is None
-        assert not q.empty()  # entry still put on queue even on failure
+    def test_removes_from_in_flight(self):
+        service = make_service()
+        trial_id, _ = service.request_point()
+        service.cancel_trial(trial_id)
+        assert trial_id not in service._in_flight
 
-    def test_timeout_returns_none(self, tmp_path):
-        broker = make_mock_broker(set_event=False)  # event never set
-        gp = make_broker_gp(broker, tmp_path, trial_timeout=0.05)
-        q = Queue()
+    def test_rebuilds_phantom_tells(self):
+        service = make_service()
+        tid1, _ = service.request_point()
+        service.request_point()  # second in-flight
+        service.cancel_trial(tid1)
+        # gpcam_init_ae called once on cancel (to rebuild without cancelled point)
+        assert service.gpcam_init_ae.call_count >= 1
 
-        value, variance = gp.do_measurement({"DOPC": 0.1}, 0, make_entry(), q)
+    def test_ignores_unknown_trial_id(self):
+        service = make_service()
+        # Should not raise
+        service.cancel_trial("nonexistent")
 
-        assert value is None
-        assert variance is None
 
-    def test_channel_returned_after_timeout(self, tmp_path):
-        broker = make_mock_broker(set_event=False)
-        gp = make_broker_gp(broker, tmp_path, channels=[0], trial_timeout=0.05)
+# ---------------------------------------------------------------------------
+# PSEPointService — notify_in_flight
+# ---------------------------------------------------------------------------
 
-        gp.do_measurement({"DOPC": 0.1}, 0, make_entry(), Queue())
+class TestNotifyInFlight:
 
-        # Channel must be back in the pool after do_measurement returns,
-        # regardless of whether it timed out.
-        assert gp._channel_pool.qsize() == 1
+    def test_repopulates_in_flight(self):
+        service = make_service()
+        service.notify_in_flight("old-trial", {"DOPC": 0.1, "DPPC": 0.05})
+        assert "old-trial" in service._in_flight
 
-    def test_publish_run_trial_called_with_correct_fields(self, tmp_path):
-        broker = make_mock_broker(protocol_result=-1.0)
-        gp = make_broker_gp(broker, tmp_path)
+    def test_position_matches_params(self):
+        service = make_service()
+        service.notify_in_flight("t1", {"DOPC": 0.2, "DPPC": 0.1})
+        pos = service._in_flight["t1"]
+        np.testing.assert_array_almost_equal(pos, [0.2, 0.1])
 
-        gp.do_measurement({"DOPC": 0.2}, 0, make_entry(), Queue())
-
-        call_kwargs = broker.publish_run_trial.call_args
-        assert call_kwargs.kwargs["parameters"] == {"DOPC": 0.2}
-        assert call_kwargs.kwargs["protocol_id"] == "test-proto"
-        assert call_kwargs.kwargs["channel"] == 0
-
-    def test_telemetry_published_on_success(self, tmp_path):
-        broker = make_mock_broker(protocol_result=-1.0)
-        gp = make_broker_gp(broker, tmp_path)
-
-        gp.do_measurement({"DOPC": 0.1}, 0, make_entry(), Queue())
-
-        routing_keys = [c.args[0] for c in broker.publish_telemetry.call_args_list]
-        from roadmap_broker_client.topics import (
-            PSE_EXPLORATION_POINT_DISPATCHED,
-            PSE_EXPLORATION_POINT_COMPLETED,
-        )
-        assert PSE_EXPLORATION_POINT_DISPATCHED in routing_keys
-        assert PSE_EXPLORATION_POINT_COMPLETED in routing_keys
-
-    def test_point_completed_not_published_on_failure(self, tmp_path):
-        broker = make_mock_broker(success=False)
-        gp = make_broker_gp(broker, tmp_path)
-
-        gp.do_measurement({"DOPC": 0.1}, 0, make_entry(), Queue())
-
-        routing_keys = [c.args[0] for c in broker.publish_telemetry.call_args_list]
-        from roadmap_broker_client.topics import PSE_EXPLORATION_POINT_COMPLETED
-        assert PSE_EXPLORATION_POINT_COMPLETED not in routing_keys
+    def test_rebuilds_phantom_tells(self):
+        service = make_service()
+        service.notify_in_flight("t1", {"DOPC": 0.1, "DPPC": 0.0})
+        assert service.gpcam_init_ae.called
 
 
 # ---------------------------------------------------------------------------
@@ -244,130 +226,152 @@ class TestDoMeasurement:
 
 class TestFilterDiscretePoints:
 
-    def test_returns_all_points_unchanged(self, tmp_path):
-        broker = MagicMock(spec=PSEBrokerWorker)
-        gp = make_broker_gp(broker, tmp_path)
-        original = list(gp.gp_discrete_points)
+    def test_returns_all_points_unchanged(self):
+        service = make_service()
+        original = list(service.gp_discrete_points)
+        result = service._filter_discrete_points()
+        assert result == original
 
-        result = gp._filter_discrete_points()
-
-        assert len(result) == len(original)
-
-    def test_logs_warning(self, tmp_path):
-        broker = MagicMock(spec=PSEBrokerWorker)
-        gp = make_broker_gp(broker, tmp_path)
-
+    def test_logs_warning(self):
+        service = make_service()
         with patch("pse.broker_worker.logger") as mock_logger:
-            gp._filter_discrete_points()
+            service._filter_discrete_points()
             mock_logger.warning.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
-# PSEBrokerWorker — threading bridge in isolation (no async loop)
+# PSEBrokerWorker — command dispatch (no async loop, no RabbitMQ)
 # ---------------------------------------------------------------------------
 
-class TestPSEBrokerWorker:
+def make_broker_worker_with_service(paused=False):
+    """Return (worker, mock_service) with the loop NOT started."""
+    worker = PSEBrokerWorker.__new__(PSEBrokerWorker)
+    worker._loop = None
+    worker._exchange = MagicMock()
+    worker._thread = None
+    worker._ready = threading.Event()
+    worker._ready.set()  # pretend connected
+    worker._lock = threading.Lock()
+    worker._service = None
 
-    def test_register_and_pop(self):
-        worker = PSEBrokerWorker()
-        event = worker.register_trial("tid-1")
+    service = MagicMock(spec=PSEPointService)
+    service._paused = paused
+    service.request_point.return_value = ("trial-uuid", {"DOPC": 0.1})
+    worker._service = service
 
-        assert isinstance(event, threading.Event)
-        assert not event.is_set()
+    # Replace _emit with a no-op coroutine so handlers can be awaited
+    worker._emit = AsyncMock()
 
-        # Simulate the broker thread delivering a result
-        with worker._lock:
-            worker._results["tid-1"] = {"success": True, "payload": {"x": 1}}
-        event.set()
+    return worker, service
 
-        assert event.is_set()
-        result = worker.pop_result("tid-1")
-        assert result["success"] is True
-        assert result["payload"]["x"] == 1
 
-    def test_pop_cleans_up_pending_and_results(self):
-        worker = PSEBrokerWorker()
-        worker.register_trial("tid-2")
-        with worker._lock:
-            worker._results["tid-2"] = {"success": False, "payload": {}}
-
-        worker.pop_result("tid-2")
-
-        with worker._lock:
-            assert "tid-2" not in worker._pending
-            assert "tid-2" not in worker._results
-
-    def test_pop_unknown_trial_returns_empty(self):
-        worker = PSEBrokerWorker()
-        result = worker.pop_result("nonexistent")
-        assert result == {}
+class TestPSEBrokerWorkerDispatch:
 
     @pytest.mark.asyncio
-    async def test_on_trial_result_sets_event(self):
-        """_on_trial_result sets the threading.Event for a registered trial."""
-        import uuid
-        from roadmap_broker_client.envelope import Envelope
-        from roadmap_broker_client.topics import TRIAL_COMPLETED
-
-        trial_id = str(uuid.uuid4())
-        worker = PSEBrokerWorker()
-        event = worker.register_trial(trial_id)
-
-        envelope = Envelope(
-            task_id=trial_id,
-            execution_policy="repeatable",
-            payload={"trial_id": trial_id, "result": {"protocol_result": 5.0}, "channel": 0},
-        )
-        message = MagicMock()
-        message.routing_key = TRIAL_COMPLETED
-
-        await worker._on_trial_result(envelope, message)
-
-        assert event.is_set()
-        result = worker.pop_result(trial_id)
-        assert result["success"] is True
+    async def test_request_point_calls_service(self):
+        worker, service = make_broker_worker_with_service()
+        await worker._handle_request_point({"campaign_id": "c1", "channel": 0})
+        service.request_point.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_on_trial_result_unknown_id_does_not_raise(self):
-        import uuid
-        from roadmap_broker_client.envelope import Envelope
-        from roadmap_broker_client.topics import TRIAL_FAILED
+    async def test_request_point_emits_point_suggested(self):
+        from roadmap_broker_client.topics import PSE_POINT_SUGGESTED
+        worker, service = make_broker_worker_with_service()
+        await worker._handle_request_point({"campaign_id": "c1", "channel": 2})
+        worker._emit.assert_awaited_once()
+        rk = worker._emit.call_args[0][0]
+        assert rk == PSE_POINT_SUGGESTED
 
-        worker = PSEBrokerWorker()
-        envelope = Envelope(
-            task_id=uuid.uuid4(),
-            execution_policy="repeatable",
-            payload={"trial_id": str(uuid.uuid4()), "error": "oops"},
-        )
-        message = MagicMock()
-        message.routing_key = TRIAL_FAILED
+    @pytest.mark.asyncio
+    async def test_request_point_echoes_caller_context(self):
+        worker, service = make_broker_worker_with_service()
+        await worker._handle_request_point({"campaign_id": "c1", "channel": 2})
+        payload = worker._emit.call_args[0][1]
+        assert payload.get("campaign_id") == "c1"
+        assert payload.get("channel") == 2
 
-        # Should log a warning and return cleanly — no exception.
-        await worker._on_trial_result(envelope, message)
+    @pytest.mark.asyncio
+    async def test_request_point_skipped_when_paused(self):
+        worker, service = make_broker_worker_with_service(paused=True)
+        await worker._handle_request_point({})
+        service.request_point.assert_not_called()
+        worker._emit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_request_point_skipped_when_no_service(self):
+        worker, _ = make_broker_worker_with_service()
+        worker._service = None
+        await worker._handle_request_point({})
+        worker._emit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_submit_result_calls_service(self):
+        worker, service = make_broker_worker_with_service()
+        await worker._handle_submit_result({
+            "trial_id": "t1", "value": -5.0, "variance": 0.1
+        })
+        service.submit_result.assert_called_once_with("t1", -5.0, 0.1)
+
+    @pytest.mark.asyncio
+    async def test_submit_result_rejects_missing_fields(self):
+        worker, service = make_broker_worker_with_service()
+        await worker._handle_submit_result({"trial_id": "t1"})  # no value
+        service.submit_result.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cancel_trial_calls_service(self):
+        worker, service = make_broker_worker_with_service()
+        await worker._handle_cancel_trial({"trial_id": "t2"})
+        service.cancel_trial.assert_called_once_with("t2")
+
+    @pytest.mark.asyncio
+    async def test_cancel_trial_ignores_missing_id(self):
+        worker, service = make_broker_worker_with_service()
+        await worker._handle_cancel_trial({})
+        service.cancel_trial.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_notify_in_flight_calls_service(self):
+        worker, service = make_broker_worker_with_service()
+        await worker._handle_notify_in_flight({
+            "trial_id": "t3", "parameters": {"DOPC": 0.2}
+        })
+        service.notify_in_flight.assert_called_once_with("t3", {"DOPC": 0.2})
+
+    @pytest.mark.asyncio
+    async def test_notify_in_flight_ignores_empty_params(self):
+        worker, service = make_broker_worker_with_service()
+        await worker._handle_notify_in_flight({"trial_id": "t3", "parameters": {}})
+        service.notify_in_flight.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
-# BrokerGp defaults
+# PSEBrokerWorker — set_service
 # ---------------------------------------------------------------------------
 
-class TestBrokerGpDefaults:
+class TestSetService:
 
-    def test_default_channels_is_single_channel_zero(self, tmp_path):
-        broker = MagicMock(spec=PSEBrokerWorker)
-        gp = BrokerGp(
-            broker_worker=broker,
-            protocol_id="p",
-            exp_par=EXP_PAR,
-            storage_path=str(tmp_path),
-            optimizer="gpcam",
-            resume=False,
-        )
-        assert gp.parallel_measurements == 1
-        assert gp._channel_pool.qsize() == 1
-        assert gp._channel_pool.get() == 0
+    def test_set_service_registers_service(self):
+        worker = PSEBrokerWorker.__new__(PSEBrokerWorker)
+        worker._lock = threading.Lock()
+        worker._service = None
+        worker._ready = threading.Event()
+        worker._loop = None
 
-    def test_multichannel_sets_parallel_measurements(self, tmp_path):
-        broker = MagicMock(spec=PSEBrokerWorker)
-        gp = make_broker_gp(broker, tmp_path, channels=[0, 1, 2])
-        assert gp.parallel_measurements == 3
-        assert gp._channel_pool.qsize() == 3
+        mock_service = MagicMock(spec=PSEPointService)
+        worker.set_service(mock_service)
+
+        with worker._lock:
+            assert worker._service is mock_service
+
+    def test_set_service_none_clears_service(self):
+        worker = PSEBrokerWorker.__new__(PSEBrokerWorker)
+        worker._lock = threading.Lock()
+        worker._service = MagicMock()
+        worker._ready = threading.Event()
+        worker._loop = None
+
+        worker.set_service(None)
+
+        with worker._lock:
+            assert worker._service is None
