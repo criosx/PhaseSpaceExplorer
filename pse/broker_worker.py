@@ -642,6 +642,7 @@ class PSEBrokerWorker:
         )
         try:
             await asyncio.to_thread(service.initialize)
+            await asyncio.to_thread(service.iterations_inprogress_save_to_file)
         except Exception:
             logger.exception(
                 "PSEPointService.initialize() failed for campaign %s.", campaign_id

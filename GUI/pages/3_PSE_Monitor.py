@@ -118,8 +118,9 @@ def results_panel():
     if ci_path.exists():
         with open(ci_path, "rb") as fh:
             df_ci = pd.DataFrame(pickle.load(fh))
-        st.subheader("In-progress measurements")
-        st.dataframe(df_ci, hide_index=True, use_container_width=True)
+        if not df_ci.empty:
+            st.subheader("In-progress measurements")
+            st.dataframe(df_ci, hide_index=True, use_container_width=True)
 
     # Finished results — gpCAM
     res_gpcam = pse_dir / "results" / "gpCAMstream.pkl"
