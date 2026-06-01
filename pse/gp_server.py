@@ -38,8 +38,12 @@ class GpServer:
         data = request.get_json()
         if data is None or not isinstance(data, dict):
             abort(400, description='No valid data received.')
-        if self.p is not None:
+        if self.p is not None and self.p.is_alive():
             abort(400, description='Another PSE optimization is already running.')
+        if self.p is not None and not self.p.is_alive():
+            # clean up finished threads
+            self.p.join(timeout=0)
+            self.p = None
         return data
 
     def default(self):
@@ -70,8 +74,8 @@ class GpServer:
                 # call start PSE function as functionally a restart from Pause is only different in that the hardware
                 # is not being reiniatialized, which will be decided based on inside gp.py the 'paused' flag in the
                 # task_dict
-                self.pse_go(data, from_pause=True)
-            return "PSE resumed"
+                return self.pse_go(data, from_pause=True)
+            return "PSE was canceled"
         else:
             return "PSE was not paused."
 
@@ -88,26 +92,33 @@ class GpServer:
     def start_pse(self):
         """
         POST request function that starts a PSE task.
-        The POST data must dictioinary must contain the keyword arguments passed to gp init
+        The POST data dictionary must contain the keyword arguments passed to gp init
         :return: status message.
         """
+        # only start if no other thread is running
         data = self.check_post()
-        if not self.task_dict['cancelled']:
-            return "PSE was already running."
         self.task_dict['cancelled'] = False
-        self.pse_go(data, from_pause=False)
-        return "PSE started"
+        return self.pse_go(data, from_pause=False)
+
 
     def pse_go(self, data, from_pause=False):
         # 'client' key no longer used — BrokerGp is the only implementation.
         data.pop('client', None)
 
-        if from_pause:
-            # Reinitialise base Gp state with updated args; BrokerGp-specific
-            # state (_broker, _channel_pool, etc.) is preserved from the paused run.
-            GpParent.__init__(self.gpo, **data)
-        else:
-            self.gpo = BrokerGp(broker_worker=self._broker, **data)
+        return self.start_Gp_thread(data, from_pause=from_pause, gpobject=GpObject)
+
+    def start_Gp_thread(self, data, from_pause=False, gpobject=None):
+        try:
+            if from_pause:
+                # Reinitialise base Gp state with updated args; BrokerGp-specific
+                # state (_broker, _channel_pool, etc.) is preserved from the paused run.
+                GpParent.__init__(self.gpo, **data)
+            else:
+                self.gpo = BrokerGp(broker_worker=self._broker, **data)
+        except ValueError as e:
+            self.task_dict['cancelled'] = True
+            self.task_dict['progress'] = '100%'
+            return str(e)
 
         self.task_dict["progress"] = "0%"
         self.p = Thread(target=self.gpo.run, args=(self.task_dict, from_pause))
@@ -119,12 +130,12 @@ class GpServer:
         if self.task_dict['cancelled']:
             return "PSE was already stopped."
         self.task_dict["cancelled"] = True
-        if self.p is not None:
+        if self.p is not None and self.p.is_alive():
             self.p.join()
             self.gpo = None
             self.p = None
         else:
-            # PSE not cancelled, but process not alive -> gp is in pause
+            # PSE not canceled, but process not alive -> gp is in pause
             # shut down hardware
             if self.gpo is not None:
                 self.gpo.gp_hardware_shutdown()

@@ -3,7 +3,6 @@ from os import path, mkdir
 import json
 import math
 import matplotlib.pyplot as plt
-#from multiprocessing import Process, Queue
 from threading import Thread
 from queue import Queue
 import numpy as np
@@ -175,21 +174,38 @@ def unpack(packed):
 
 
 class Gp:
-    def __init__(self, exp_par, storage_path=None, acq_func="variance", gpcam_iterations=50,
-                 gpcam_init_dataset_size=20, gpcam_step=1, keep_plots=False, miniter=1, optimizer='gpcam',
-                 parallel_measurements=1, resume=True, signal_estimate=10, show_support_points=True,
-                 train_global_every=None, gp_discrete_points=None, project_name=''):
+    def __init__(self,
+                 exp_par,
+                 storage_path=None,
+                 acq_func="variance",
+                 gpcam_iterations=50,
+                 gpcam_init_dataset_size=20,
+                 gpcam_step=1,
+                 keep_plots=False,
+                 miniter=1,
+                 optimizer='gpcam',
+                 parallel_measurements=1,
+                 resume=True,
+                 signal_estimate=10,
+                 show_support_points=True,
+                 train_global_every=None,
+                 gp_discrete_points=None,
+                 project_name=''):
         """
         Initialize the GP class.
         :param exp_par: (Pandas dataframe or json or dict) Exploration parameter dataframe with rows: "name", "type",
                         "value", "lower_opt", "upper_opt", "step_opt"
+                        'type' refers hereby to what kind of optimization parameter such as 'parameter' or 'compound'
+                        it is. This identifier might in future be used to modify, for example, the shape of the search
+                        space.
         :param optimizer: (string) Optimizer name 'gpcam', 'gpCAM' (redundant), or 'grid'
         :param gp_discrete_points: (ndarray or list) of shape V x D, where D is the length of the input vector that
                                    defines the grid of possible measurement points. If gp_discrete points is provided,
                                    there still needs to be an exp_par dataframe for plotting and naming.
-                                   (string) If a string is provided, this is interpreted as a filenam of a json
+                                   (string) If a string is provided, this is interpreted as a filenam of a JSON
                                    file that contains the discrete points, if the string value is 'default file', the
                                    default filename /evaluation_points.json is used.
+                                   (None) Discrete points are not used.
         :param resume: (bool, default False) loads previous results from the storage path.
         :param signal_estimate: (float) estimated max signal (max - min) for gp hyperparameter setting
         """
@@ -242,6 +258,11 @@ class Gp:
         self.exp_par = exp_par
         # keep only rows that are being explored
         self.exp_par = self.exp_par[self.exp_par['optimize']]
+        if self.exp_par.empty:
+            raise ValueError(
+                "No optimization parameters selected. "
+                "At least one parameter must have optimize=True."
+            )
         columns_to_keep = ['name', 'type', 'value', 'lower_opt', 'upper_opt', 'step_opt']
         self.exp_par = self.exp_par[columns_to_keep]
 
@@ -284,17 +305,17 @@ class Gp:
                     self.gpcam_load_discrete_evaluation_points(gp_discrete_points)
                 else:
                     self.gp_discrete_points = gp_discrete_points
+                    # save discrete points for later reuse if not loaded from file
+                    self.gpcam_save_discrete_evaluation_points()
+                self.gp_evaluation_points = self.gp_discrete_points
             else:
+                self.gp_discrete_points = None
                 grids = np.meshgrid(*self.axes, indexing='ij')
-                self.gp_discrete_points = np.stack(grids, axis=-1).reshape(-1, len(self.axes))
+                self.gp_evaluation_points = np.stack(grids, axis=-1).reshape(-1, len(self.axes))
                 # make this numpy array into a list of numpy arrays along axis 0
                 # This is mainly for GPOptimizer.ask(), which requires a list of 1d-numpy arrays for non-Eucledian
                 # inputs
-                self.gp_discrete_points = [self.gp_discrete_points[i] for i in range(self.gp_discrete_points.shape[0])]
-
-            # save discrete points for later reuse if not loaded from file
-            if not isinstance(gp_discrete_points, str):
-                self.gpcam_save_discrete_evaluation_points()
+                # self.gp_discrete_points = [self.gp_discrete_points[i] for i in range(self.gp_discrete_points.shape[0])]
 
             self.hyper_bounds = None
 
@@ -311,6 +332,7 @@ class Gp:
         self.prediction_gpcam = np.zeros(self.steplist)
         self.prediction_var_gpcam = np.zeros(self.steplist)
         self.mutual_information_gpcam = None
+
 
     def do_measurement(self, optpars, it_label, entry, q):
         """
@@ -505,7 +527,7 @@ class Gp:
                 for i, col in enumerate(hycols):
                     self.gpCAMstream.at[self.gpCAMstream.index[-1], col] = hypars[i]
                 self.gpCAMstream.at[self.gpCAMstream.index[-1], 'mutual information'] = self.mutual_information_gpcam
-                self.gpcam_plot()
+                self.plot_results()
 
             self.results_io()
             self.iterations_inprogress_save_to_file()
@@ -522,7 +544,7 @@ class Gp:
                 collect_measurement(gpcam_initialized=False)
             elif len(self.measurement_inprogress) < self.parallel_measurements:
                 print(f'Preparing initial measurement #{self.gpiteration}.')
-                if self.gpiteration == 0:
+                if self.gpiteration == 0 and self.gp_discrete_points is not None:
                     next_point = self.gp_discrete_points[0]
                 else:
                     # Get in-progress measurement points and stream points
@@ -536,14 +558,21 @@ class Gp:
                         used_points = meas_points if meas_points is not None else stream_points
                     # Try up to 10 times to find an unused point
                     for _ in range(10):
-                        next_point = self.gp_discrete_points[np.random.randint(len(self.gp_discrete_points))]
+                        # pick a random point from the evaluation points, which exist whether discrete points were
+                        # given or not
+                        next_point = self.gp_evaluation_points[np.random.randint(len(self.gp_evaluation_points))]
                         if used_points is None or not np.any(np.all(used_points == next_point, axis=1)):
                             break
+
                 self.work_on_iteration(next_point, self.gpiteration)
                 self.gpiteration += 1
+            else:
+                # nothing to do
+                time.sleep(5)
 
+        # wait for at least one measurement to finished if currently all parallel capacity in use
         printed = False
-        while (len(self.measurement_inprogress) == self.gpcam_init_dataset_size and
+        while (len(self.measurement_inprogress) == self.parallel_measurements and
                not self.task_dict['cancelled'] and not self.task_dict['paused']):
             if not printed:
                 print('Waiting for at least one measurement to finish.')
@@ -577,8 +606,12 @@ class Gp:
 
                 submit_counter = 0
                 for i in range(n_max):
+                    if self.gp_discrete_points is not None:
+                        input_set = self.gp_discrete_points
+                    else:
+                        input_set = np.array([(self.axes[i][0], self.axes[i][-1]) for i in range(len(self.axes))])
                     next_points = self.my_ae.ask(
-                        self.gp_discrete_points,
+                        input_set=input_set,
                         n=n_max,
                         method='global',
                         acquisition_function=self.acq_func,
@@ -619,51 +652,8 @@ class Gp:
             # delete iterations in progress log file
             self.iterations_inprogress_delete_file()
 
-        return len(self.gpCAMstream['position'].to_numpy()) == self.gpcam_iterations
+        return len(self.gpCAMstream['position'].to_numpy()) >= self.gpcam_iterations
 
-    def gpcam_plot(self):
-        path1 = path.join(self.spath, 'plots')
-        if not path.isdir(path1):
-            mkdir(path1)
-        # self.results_plot(self.prediction_gpcam, filename=path.join(path1, 'prediction_gpcam'), mark_maximum=True)
-
-        if self.show_support_points:
-            support_points = self.gpCAMstream['position'].to_numpy()
-            if support_points.dtype == object:
-                support_points = np.stack(support_points)
-                vv = self.gpCAMstream[['value', 'variance']].to_numpy()
-                support_points = np.concatenate((support_points,
-                                                 self.gpCAMstream[['value', 'variance']].to_numpy()), axis=-1)
-        else:
-            support_points = None
-
-        if len(self.axes) > 1:
-            interp = LinearNDInterpolator(self.gp_discrete_points, self.prediction_gpcam)
-        else:
-            interp = interp1d(np.array(self.gp_discrete_points).squeeze(), self.prediction_gpcam, fill_value=np.nan,
-                              bounds_error=False, kind='linear')
-
-        mesh = np.meshgrid(*self.axes, indexing='ij')
-        stacked = np.stack(mesh, axis=-1)
-        plot_positions = np.array(stacked.reshape(-1, len(self.axes)), dtype=np.float32)
-
-        self.results_plot(interp(plot_positions).reshape(self.steplist),
-                          filename=path.join(path1, 'prediction_gpcam'), mark_maximum=True,
-                          support_points=support_points)
-
-        # plot mutual information and hyperparameters
-        hypar_cols = [col for col in self.gpCAMstream.columns if col.startswith('hy')]
-        if 'mutual information' in self.gpCAMstream.columns:
-            hypar_cols = ['mutual information'] + hypar_cols
-
-        if hypar_cols:
-            filtered = self.gpCAMstream[hypar_cols].copy()
-            filtered.insert(0, 'index', self.gpCAMstream.index)
-            filtered = filtered.dropna()
-            filtered = filtered.to_numpy().T
-            save_plot_1d(filtered[0], filtered[1:], filename=path.join(path1, 'hypars'), xlabel='iteration',
-                         ylabel='information gain / hyperparameter', trace_label=hypar_cols, yscale='symlog',
-                         legend_loc='upper left')
 
     def gpcam_prediction(self, max_samplesize=500):
         """
@@ -682,7 +672,11 @@ class Gp:
             :return: (np array) the upscaled grid values
             """
 
-            if dsgrid.ndim == 1:
+            dsgrid = np.asarray(dsgrid)
+            usgrid = np.asarray(usgrid)
+            n_dim = 1 if dsgrid.ndim == 1 else dsgrid.shape[1]
+
+            if n_dim == 1:
                 # one-dimensional grid
                 x = dsgrid.reshape(-1)
                 order = np.argsort(x)
@@ -704,14 +698,7 @@ class Gp:
 
             return usvalues
 
-        # Only use discrete points for prediction and plotting.
-        # TODO: In case we want to allow defining the parameter space by boundaries, use the the commented out code
-        #   instead.
-
-        # mesh = np.meshgrid(*self.axes, indexing='ij')
-        # stacked = np.stack(mesh, axis=-1)
-        # prediction_positions = np.array(stacked.reshape(-1, len(self.axes)), dtype=np.float32)
-        prediction_positions = np.array(self.gp_discrete_points, dtype=np.float32)
+        prediction_positions = self.gp_evaluation_points
 
         # Use sparse prediction points for variance and mutual information
         n = prediction_positions.shape[0]
@@ -740,10 +727,43 @@ class Gp:
             json.dump(packed, file)
 
     def gpcam_train(self, method='mcmc'):
-        # following line to avoid bounds errors
-        # print('Original hyperparameters: ', self.my_ae.hyperparameters)
-        self.my_ae.set_hyperparameters(np.clip(self.my_ae.hyperparameters, self.hyper_bounds[:, 0],
-                                               self.hyper_bounds[:, 1]))
+        def _hyperparameters_inside_bounds(hyperparameters, bounds, rel_eps=1e-12):
+            """
+            Return hyperparameters safely inside finite bounds.
+
+            This avoids failures in optimizers that internally rescale parameters to
+            [0, 1] and then reject tiny floating-point excursions outside that range.
+            Values exactly on a finite lower or upper bound are nudged inward by a
+            small relative amount. Infinite bounds, if ever used, are left unchanged.
+            """
+            hyperparameters = np.asarray(hyperparameters, dtype=float)
+            bounds = np.asarray(bounds, dtype=float)
+
+            lower = bounds[:, 0]
+            upper = bounds[:, 1]
+            width = upper - lower
+
+            safe_lower = np.where(
+                np.isfinite(lower) & np.isfinite(width),
+                lower + rel_eps * width,
+                lower,
+            )
+            safe_upper = np.where(
+                np.isfinite(upper) & np.isfinite(width),
+                upper - rel_eps * width,
+                upper,
+            )
+
+            return np.minimum(np.maximum(hyperparameters, safe_lower), safe_upper)
+
+        # SciPy's differential_evolution rescales x0 into [0, 1] internally.
+        # If a hyperparameter sits exactly on a bound, floating-point roundoff can
+        # produce a tiny value such as -1e-16 after scaling, which SciPy treats as
+        # outside the bounds.  Therefore, nudge hyperparameters slightly inside the
+        # open interval before training instead of clipping exactly to the bounds.
+        self.my_ae.set_hyperparameters(
+            _hyperparameters_inside_bounds(self.my_ae.hyperparameters, self.hyper_bounds)
+        )
         # print('New hyperparameters: ', self.my_ae.hyperparameters)
         self.my_ae.train(
             hyperparameter_bounds=self.hyper_bounds,
@@ -783,10 +803,7 @@ class Gp:
             self.task_dict['progress'] = '{:.2f}%'.format(progress * 100)
 
             self.results_io()
-            path1 = path.join(self.spath, 'plots')
-            filename = path.join(path1, 'prediction_gpcam')
-            self.results_plot(np.nan_to_num(self.results, nan=0), arr_variance=np.nan_to_num(self.variances, nan=0.0),
-                              filename=filename)
+            self.plot_results()
             return
 
         bWorkedOnIndex = False
@@ -868,20 +885,129 @@ class Gp:
         with open(path.join(self.spath, 'results', 'current_iterations.pkl'), 'wb') as file:
             pickle.dump(output_df, file)
 
-    def run(self, task_dict, from_pause=False):
+    def plot_array(self, arr_value, arr_variance=None, filename='plot', mark_maximum=False, valmin=None, valmax=None,
+                   levels=20, niceticks=False, vallabel='z', support_points=None):
+
+        # onecolormaps = [plt.cm.Greys, plt.cm.Purples, plt.cm.Blues, plt.cm.Greens, plt.cm.Oranges, plt.cm.Reds]
+        ec = plt.colormaps['coolwarm']
+
+        path1 = path.join(self.spath, 'plots')
+
+        if len(arr_value.shape) == 1:
+            ax0 = self.axes[0]
+            sp0 = self.exp_par['name'].tolist()[0]
+            if arr_variance is not None:
+                dy = np.sqrt(arr_variance)
+            else:
+                dy = None
+            save_plot_1d(ax0, arr_value, dy=dy, xlabel=sp0, ylabel=vallabel, filename=path.join(path1, filename),
+                         ymin=valmin, ymax=valmax, levels=levels, niceticks=niceticks, keep_plots=self.keep_plots,
+                         support_points=support_points)
+
+        elif len(arr_value.shape) == 2:
+            # numpy array and plot axes are reversed
+            ax1 = self.axes[0]
+            ax0 = self.axes[1]
+            sp1 = self.exp_par['name'].tolist()[0]
+            sp0 = self.exp_par['name'].tolist()[1]
+            save_plot_2d(ax0, ax1, arr_value, xlabel=sp0, ylabel=sp1, color=ec,
+                         filename=path.join(path1, filename), zmin=valmin, zmax=valmax, levels=levels,
+                         mark_maximum=mark_maximum, keep_plots=self.keep_plots, support_points=support_points)
+
+        elif len(arr_value.shape) == 3 and arr_value.shape[0] < 6:
+            ax2 = self.axes[1]
+            ax1 = self.axes[2]
+            sp2 = self.exp_par['name'].tolist()[1]
+            sp1 = self.exp_par['name'].tolist()[2]
+            for slice_n in range(arr_value.shape[0]):
+                save_plot_2d(ax1, ax2, arr_value[slice_n], xlabel=sp1, ylabel=sp2, color=ec,
+                             filename=path.join(path1, filename+'_'+str(slice_n)), zmin=valmin, zmax=valmax,
+                             levels=levels, mark_maximum=mark_maximum, keep_plots=self.keep_plots)
+
+        if len(arr_value.shape) >= 3:
+            # plot projections onto two parameters at a time
+            for i in range(len(self.exp_par)):
+                for j in range(i):
+                    ax2 = self.axes[i]
+                    ax1 = self.axes[j]
+                    sp2 = self.exp_par['name'].tolist()[i]
+                    sp1 = self.exp_par['name'].tolist()[j]
+                    projection = np.empty((self.steplist[i], self.steplist[j]))
+                    for k in range(self.steplist[i]):
+                        for ll in range(self.steplist[j]):
+                            projection[k, ll] = np.nanmax(np.take(np.take(arr_value, indices=k, axis=i), indices=ll, axis=j))
+                    save_plot_2d(ax1, ax2, projection, xlabel=sp1, ylabel=sp2, color=ec,
+                                 filename=path.join(path1, filename+'_'+sp1+'_'+sp2), zmin=valmin, zmax=valmax,
+                                 levels=levels, mark_maximum=mark_maximum, keep_plots=self.keep_plots)
+
+
+    def plot_results(self, mark_maximum=True):
+        if self.optimizer == 'grid':
+            path1 = path.join(self.spath, 'plots')
+            filename = path.join(path1, 'prediction_gpcam')
+            self.plot_array(np.nan_to_num(self.results, nan=0), arr_variance=np.nan_to_num(self.variances, nan=0.0),
+                            filename=filename, mark_maximum=mark_maximum)
+        elif self.optimizer == 'gpcam':
+            path1 = path.join(self.spath, 'plots')
+            if not path.isdir(path1):
+                mkdir(path1)
+            # self.plot_array(self.prediction_gpcam, filename=path.join(path1, 'prediction_gpcam'), mark_maximum=True)
+
+            if self.show_support_points:
+                support_points = self.gpCAMstream['position'].to_numpy()
+                if support_points.dtype == object:
+                    support_points = np.stack(support_points)
+                    vv = self.gpCAMstream[['value', 'variance']].to_numpy()
+                    support_points = np.concatenate((support_points,
+                                                     self.gpCAMstream[['value', 'variance']].to_numpy()), axis=-1)
+            else:
+                support_points = None
+
+            if len(self.axes) > 1:
+                interp = LinearNDInterpolator(self.gp_evaluation_points, self.prediction_gpcam)
+            else:
+                interp = interp1d(np.array(self.gp_evaluation_points).squeeze(), self.prediction_gpcam, fill_value=np.nan,
+                                  bounds_error=False, kind='linear')
+
+            mesh = np.meshgrid(*self.axes, indexing='ij')
+            stacked = np.stack(mesh, axis=-1)
+            plot_positions = np.array(stacked.reshape(-1, len(self.axes)), dtype=np.float32)
+
+            self.plot_array(interp(plot_positions).reshape(self.steplist),
+                            filename=path.join(path1, 'prediction_gpcam'), mark_maximum=mark_maximum,
+                            support_points=support_points)
+
+            # plot mutual information and hyperparameters
+            hypar_cols = [col for col in self.gpCAMstream.columns if col.startswith('hy')]
+            if 'mutual information' in self.gpCAMstream.columns:
+                hypar_cols = ['mutual information'] + hypar_cols
+
+            if hypar_cols:
+                filtered = self.gpCAMstream[hypar_cols].copy()
+                filtered.insert(0, 'index', self.gpCAMstream.index)
+                filtered = filtered.dropna()
+                filtered = filtered.to_numpy().T
+                save_plot_1d(filtered[0], filtered[1:], filename=path.join(path1, 'hypars'), xlabel='iteration',
+                             ylabel='information gain / hyperparameter', trace_label=hypar_cols, yscale='symlog',
+                             legend_loc='upper left')
+
+    def run(self, task_dict=None, from_pause=False):
         """
         Runs the PSE algorithm. Parameters are provided in the task_dict dictionary.
+        :param from_pause: wheter to resume the Gp
         :param task_dict: (dict) A dictionary containing the parameters to be passed to the PSE algorithm.
         :return: (bool) True if the algorithm ran succesfully, False otherwise.
         """
-
-        if self.optimizer != 'grid' or self.optimizer != 'gpcam':
-            self.task_dict['status'] = 'failure - optimization method not implemented'
-
         self.task_dict = task_dict
-
+        if self.task_dict is None:
+            self.task_dict={
+                'cancelled': False
+            }
         if 'paused' not in self.task_dict:
             self.task_dict['paused'] = False
+
+        if self.optimizer != 'grid' and self.optimizer != 'gpcam':
+            self.task_dict['status'] = 'failure - optimization method not implemented'
 
         if not from_pause:
             # only intialize hardware if PSE was not paused before since hardware would already be initialized
@@ -950,60 +1076,6 @@ class Gp:
         else:
             raise NotImplementedError('Unknown optimization method')
 
-    def results_plot(self, arr_value, arr_variance=None, filename='plot', mark_maximum=False, valmin=None, valmax=None,
-                     levels=20, niceticks=False, vallabel='z', support_points=None):
-
-        # onecolormaps = [plt.cm.Greys, plt.cm.Purples, plt.cm.Blues, plt.cm.Greens, plt.cm.Oranges, plt.cm.Reds]
-        ec = plt.colormaps['coolwarm']
-
-        path1 = path.join(self.spath, 'plots')
-
-        if len(arr_value.shape) == 1:
-            ax0 = self.axes[0]
-            sp0 = self.exp_par['name'].tolist()[0]
-            if arr_variance is not None:
-                dy = np.sqrt(arr_variance)
-            else:
-                dy = None
-            save_plot_1d(ax0, arr_value, dy=dy, xlabel=sp0, ylabel=vallabel, filename=path.join(path1, filename),
-                         ymin=valmin, ymax=valmax, levels=levels, niceticks=niceticks, keep_plots=self.keep_plots,
-                         support_points=support_points)
-
-        elif len(arr_value.shape) == 2:
-            # numpy array and plot axes are reversed
-            ax1 = self.axes[0]
-            ax0 = self.axes[1]
-            sp1 = self.exp_par['name'].tolist()[0]
-            sp0 = self.exp_par['name'].tolist()[1]
-            save_plot_2d(ax0, ax1, arr_value, xlabel=sp0, ylabel=sp1, color=ec,
-                         filename=path.join(path1, filename), zmin=valmin, zmax=valmax, levels=levels,
-                         mark_maximum=mark_maximum, keep_plots=self.keep_plots, support_points=support_points)
-
-        elif len(arr_value.shape) == 3 and arr_value.shape[0] < 6:
-            ax2 = self.axes[1]
-            ax1 = self.axes[2]
-            sp2 = self.exp_par['name'].tolist()[1]
-            sp1 = self.exp_par['name'].tolist()[2]
-            for slice_n in range(arr_value.shape[0]):
-                save_plot_2d(ax1, ax2, arr_value[slice_n], xlabel=sp1, ylabel=sp2, color=ec,
-                             filename=path.join(path1, filename+'_'+str(slice_n)), zmin=valmin, zmax=valmax,
-                             levels=levels, mark_maximum=mark_maximum, keep_plots=self.keep_plots)
-
-        if len(arr_value.shape) >= 3:
-            # plot projections onto two parameters at a time
-            for i in range(len(self.exp_par)):
-                for j in range(i):
-                    ax2 = self.axes[i]
-                    ax1 = self.axes[j]
-                    sp2 = self.exp_par['name'].tolist()[i]
-                    sp1 = self.exp_par['name'].tolist()[j]
-                    projection = np.empty((self.steplist[i], self.steplist[j]))
-                    for k in range(self.steplist[i]):
-                        for ll in range(self.steplist[j]):
-                            projection[k, ll] = np.nanmax(np.take(np.take(arr_value, indices=k, axis=i), indices=ll, axis=j))
-                    save_plot_2d(ax1, ax2, projection, xlabel=sp1, ylabel=sp2, color=ec,
-                                 filename=path.join(path1, filename+'_'+sp1+'_'+sp2), zmin=valmin, zmax=valmax,
-                                 levels=levels, mark_maximum=mark_maximum, keep_plots=self.keep_plots)
 
     def work_on_iteration(self, position, itlabel):
         """
@@ -1043,6 +1115,8 @@ class Gp:
             self.measurement_aborted = True
 
         return
+
+
 
 
 
