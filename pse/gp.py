@@ -1042,6 +1042,7 @@ class Gp:
 
     def results_io(self, load=False):
         if self.optimizer == 'grid':
+            # TODO: Use only JSON for saving or loading
             if load:
                 with open(path.join(self.spath, 'results', 'pse_grid_results.pkl'), 'rb') as file:
                     self.results = pickle.load(file)
@@ -1065,11 +1066,12 @@ class Gp:
                     json.dump(json_out, file)
         elif self.optimizer == 'gpcam':
             if load:
-                with open(path.join(self.spath, 'results', 'gpCAMstream.pkl'), 'rb') as file:
-                    self.gpCAMstream = pickle.load(file)
+                self.gpCAMstream = pd.read_json(path.join(self.spath, 'results', 'gpCAMstream.json'), orient="records")
+                # with open(path.join(self.spath, 'results', 'gpCAMstream.pkl'), 'rb') as file:
+                #     self.gpCAMstream = pickle.load(file)
             else:
-                with open(path.join(self.spath, 'results', 'gpCAMstream.pkl'), 'wb') as file:
-                    pickle.dump(self.gpCAMstream, file)
+                # with open(path.join(self.spath, 'results', 'gpCAMstream.pkl'), 'wb') as file:
+                #    pickle.dump(self.gpCAMstream, file)
                 # create a json output
                 path_name = path.join(self.spath, 'results', 'gpCAMstream.json')
                 self.gpCAMstream.to_json(path_name, orient="records", indent=2)

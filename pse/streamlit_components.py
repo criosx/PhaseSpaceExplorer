@@ -386,11 +386,10 @@ def monitor():
             st.text("Current measurements in progress:")
             st.dataframe(df_ci, hide_index=True)
 
-        res_path_gpcam = os.path.join(st.session_state['pse_dir'], 'results', 'gpCAMstream.pkl')
+        res_path_gpcam = os.path.join(st.session_state['pse_dir'], 'results', 'gpCAMstream.json')
         res_path_grid = os.path.join(st.session_state['pse_dir'], 'results', 'pse_grid_results.pkl')
         if os.path.exists(res_path_gpcam):
-            with open(res_path_gpcam, 'rb') as file:
-                df_res_gpcam = pandas.DataFrame(pickle.load(file))
+            df_res_gpcam = pandas.read_json(res_path_gpcam, orient="records")
             st.text("Finished measurements:")
             st.dataframe(df_res_gpcam, hide_index=False, width='stretch')
 
@@ -523,9 +522,9 @@ def pse_directory(identifier:str='PSE', st_directory_identifier:str='pse_dir'):
                     time.sleep(1)
                     st.rerun()
 
-@st.fragment
 def parameter_input():
     if st.session_state.configuration_reloaded:
+        st.info("Reset input widget")
         st.session_state['pse_input_widget_key'] = uuid.uuid4()
         if st.session_state.cfg.pse_opt_pars:
             df_opt_pars = pandas.DataFrame(st.session_state.cfg.pse_opt_pars)

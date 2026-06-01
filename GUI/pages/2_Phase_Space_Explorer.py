@@ -24,6 +24,8 @@ with st.expander('Setup'):
     ### Model Fit
     """)
     streamlit_components.parameter_input()
+    # TODO: Revisit restart logic. Reset of configuration_loaded flag necessary here to make any changes to the input permanent. What about run_control?
+    st.session_state.configuration_reloaded = False
 
 if 'opt_pars' in st.session_state:
     if not any(st.session_state['opt_pars']['optimize']):
