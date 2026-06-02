@@ -55,13 +55,13 @@ class GpServer:
     def get_status(self):
         if self.gpo is not None:
             return self.gpo.task_dict.get('status', 'running')
-        return "no status to report"
+        return "idle"
 
     def get_info(self):
         from pse.broker_worker import ACQUISITION_FUNCTIONS
         return jsonify({
             "has_service": self.gpo is not None,
-            "status": self.gpo.task_dict.get('status', 'running') if self.gpo else None,
+            "status": self.gpo.task_dict.get('status', 'running') if self.gpo else "idle",
             "storage_path": str(self.gpo.spath) if self.gpo else None,
             "acquisition_functions": list(ACQUISITION_FUNCTIONS.keys()),
         })

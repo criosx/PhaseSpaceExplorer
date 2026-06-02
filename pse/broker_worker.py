@@ -567,10 +567,10 @@ class PSEBrokerWorker:
     async def _handle_stop_campaign(self, payload: dict) -> None:
         """PS signals that the campaign is over (max_steps reached or manual stop).
 
-        Runs final disk flush and plots, then deregisters the service.
-        set_service(None) publishes pse.ready(has_service=False), which tells PS
-        not to send further request_point commands.  PSE's disk files are a
-        write-through cache only — PS's DB is the authoritative record of results.
+        Deregisters the service immediately (so the monitor flips to idle and PS
+        stops sending request_point), then flushes data and plots in the background.
+        set_service(None) publishes pse.ready(has_service=False).  PSE's disk files
+        are a write-through cache only — PS's DB is the authoritative record.
         """
         campaign_id = payload.get("campaign_id", "")
         final_status = payload.get("final_status", "stopped")
@@ -582,7 +582,10 @@ class PSEBrokerWorker:
             logger.info("stop_campaign for %s: no active service to finalize.", campaign_id)
             return
 
-        logger.info("Finalizing PSE service for campaign %s (%s).", campaign_id, final_status)
+        logger.info("Stopping PSE service for campaign %s (%s).", campaign_id, final_status)
+
+        # Deregister first so the monitor shows idle and PS stops sending commands.
+        self.set_service(None)
 
         def _finalize() -> None:
             service.results_io()
@@ -595,12 +598,11 @@ class PSEBrokerWorker:
         except Exception:
             logger.exception("PSE finalization failed for campaign %s.", campaign_id)
 
-        self.set_service(None)
         await self._emit(PSE_EXPLORATION_STOPPED, {
             "campaign_id": campaign_id,
             "final_status": final_status,
         })
-        logger.info("PSE service deregistered for campaign %s.", campaign_id)
+        logger.info("PSE service finalized for campaign %s.", campaign_id)
 
     async def _handle_configure(self, payload: dict) -> None:
         """Construct and initialize a new PSEPointService from the broker payload.
@@ -615,6 +617,18 @@ class PSEBrokerWorker:
             return
 
         campaign_id = payload.get("campaign_id", "")
+
+        # Defensively deregister any existing service before creating a new one.
+        # Under normal operation the prior campaign's stop_campaign is always
+        # processed first (queue is sequential), so this is a safety net only.
+        with self._lock:
+            existing = self._service
+        if existing is not None:
+            logger.warning(
+                "configure for campaign %s: replacing active service without prior stop_campaign.",
+                campaign_id,
+            )
+            self.set_service(None)
         optimizer = payload.get("optimizer", "gpcam")
         storage_path = payload.get("storage_path") or f"pse_runs/{campaign_id}"
         os.makedirs(storage_path, exist_ok=True)
