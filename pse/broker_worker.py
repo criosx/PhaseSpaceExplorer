@@ -28,6 +28,7 @@ import itertools
 import logging
 import os
 import threading
+from collections import defaultdict
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -123,10 +124,14 @@ class PSEPointService(Gp):
     GPOptimizer state, so concurrent broker command handlers are safe.
     """
 
-    def __init__(self, **gp_kwargs) -> None:
+    def __init__(self, constraints: Optional[List[Dict]] = None,
+                 downsample_seed: Optional[int] = None, **gp_kwargs) -> None:
         self._in_flight: Dict[str, np.ndarray] = {}  # trial_id → position vector
         self._lock = threading.Lock()
         self._paused: bool = False
+        self._constraints: List[Dict] = constraints or []
+        self._downsample_seed: Optional[int] = downsample_seed
+        self.feasible_point_count: Optional[int] = None
         super().__init__(**gp_kwargs)
         # Translate the acq_func string stored by Gp.__init__ into the callable or
         # built-in string that GPOptimizer.ask() expects.  Unknown names fall back
@@ -146,34 +151,186 @@ class PSEPointService(Gp):
         Call once after construction, before registering with the broker worker.
         """
         if self.optimizer == "gpcam":
-            if self.gp_discrete_points is not None:
+            if self._constraints:
+                feasible = self._build_feasible_space()
+                self.gp_discrete_points = feasible
+                self.feasible_point_count = len(feasible) if feasible is not None else 0
+                if feasible is not None:
+                    # gp_evaluation_points is built by Gp.__init__ from the full unconstrained
+                    # meshgrid. Overwrite it so prediction and plotting stay within the
+                    # feasible space (mirrors what Gp.__init__ does when discrete points
+                    # are passed at construction time).
+                    self.gp_evaluation_points = np.array(feasible)
+            elif self.gp_discrete_points is not None:
                 self.gp_discrete_points = self._filter_discrete_points()
             self.gpcam_init_ae()
         logger.info(
-            "PSEPointService initialized: optimizer=%s, n_params=%d",
+            "PSEPointService initialized: optimizer=%s, n_params=%d, feasible=%s",
             self.optimizer,
             len(self.exp_par),
+            self.feasible_point_count,
         )
 
     # ------------------------------------------------------------------
     # Constraint filtering
     # ------------------------------------------------------------------
 
+    _MAX_GROUP_POINTS = 40_000
+
     def _filter_discrete_points(self) -> list:
-        """Return the feasible subset of gp_discrete_points.
-
-        Placeholder — returns all points unchanged.  Implement by building A (k×d)
-        and b (k,) from the protocol's constraint schema, then filtering with:
-
-            X = np.array(self.gp_discrete_points)
-            mask = np.all(X @ A.T <= b, axis=1)
-            return [self.gp_discrete_points[i] for i in np.where(mask)[0]]
-        """
-        logger.warning(
-            "No constraint filter configured — using full discrete point set (%d points).",
-            len(self.gp_discrete_points),
-        )
+        """Return gp_discrete_points unchanged (legacy path, no constraints)."""
         return self.gp_discrete_points
+
+    def _build_feasible_space(self) -> Optional[list]:
+        """Build the feasible discrete point space from linear constraints.
+
+        Algorithm:
+        1. Parse self._constraints → A (k×n_opt), b (k,) where op '>=','==' are normalised to '<='.
+        2. Union-find over parameter names in constraint terms → connected components (groups).
+        3. Per group: generate sub-grid from exp_par bounds, coarsen (halve step counts)
+           until product < _MAX_GROUP_POINTS, then filter by group-relevant constraints.
+        4. Cartesian product across groups → if total > _MAX_GROUP_POINTS, subsample
+           each group proportionally using self._downsample_seed for reproducibility.
+        5. Return list of 1-D numpy arrays in exp_par (optimizable) parameter order.
+        """
+        # Gp.__init__ already filters exp_par to optimizable parameters only —
+        # the 'optimize' column is absent by this point.  Use all rows as-is.
+        opt_rows = list(self.exp_par.itertuples())
+        n_opt = len(opt_rows)
+        if n_opt == 0 or not self._constraints:
+            return None
+
+        name_to_idx = {row.name: i for i, row in enumerate(opt_rows)}
+
+        # --- Build A, b ---
+        A_rows: List[np.ndarray] = []
+        b_vals: List[float] = []
+        for c in self._constraints:
+            terms = c.get("terms", {})
+            op = c.get("op", "<=")
+            rhs = float(c.get("rhs", 0.0))
+            coeffs = np.zeros(n_opt)
+            for name, coeff in terms.items():
+                if name in name_to_idx:
+                    coeffs[name_to_idx[name]] = float(coeff)
+            if op == "<=":
+                A_rows.append(coeffs)
+                b_vals.append(rhs)
+            elif op == ">=":
+                A_rows.append(-coeffs)
+                b_vals.append(-rhs)
+            elif op == "==":
+                A_rows.append(coeffs.copy())
+                b_vals.append(rhs)
+                A_rows.append(-coeffs.copy())
+                b_vals.append(-rhs)
+
+        if not A_rows:
+            return None
+
+        A = np.array(A_rows)   # (k, n_opt)
+        b = np.array(b_vals)   # (k,)
+
+        # --- Union-find grouping ---
+        parent = list(range(n_opt))
+
+        def _find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def _union(x: int, y: int) -> None:
+            px, py = _find(x), _find(y)
+            if px != py:
+                parent[px] = py
+
+        for row_vec in A_rows:
+            nonzero = [i for i in range(n_opt) if abs(row_vec[i]) > 1e-12]
+            for j in nonzero[1:]:
+                _union(nonzero[0], j)
+
+        groups_map: Dict[int, List[int]] = defaultdict(list)
+        for i in range(n_opt):
+            groups_map[_find(i)].append(i)
+        group_list = list(groups_map.values())
+
+        # Map A rows to their group root (or -1 for constant rows)
+        row_group_root = []
+        for row_vec in A_rows:
+            nonzero = [i for i in range(n_opt) if abs(row_vec[i]) > 1e-12]
+            row_group_root.append(_find(nonzero[0]) if nonzero else -1)
+
+        # --- Per-group grid + filter ---
+        feasible_groups: List[tuple] = []
+        for group_indices in group_list:
+            root = _find(group_indices[0])
+            relevant = [
+                ri for ri, g in enumerate(row_group_root)
+                if g == root or g == -1
+            ]
+            A_g = A[np.ix_(relevant, group_indices)] if relevant else np.empty((0, len(group_indices)))
+            b_g = b[relevant] if relevant else np.empty(0)
+
+            step_counts, lows, highs = [], [], []
+            for idx in group_indices:
+                row = opt_rows[idx]
+                lo = float(row.lower_opt)
+                hi = float(row.upper_opt)
+                step = float(row.step_opt)
+                n = max(2, round((hi - lo) / step) + 1) if hi > lo and step > 0 else 2
+                step_counts.append(n)
+                lows.append(lo)
+                highs.append(hi)
+
+            while int(np.prod(step_counts)) > self._MAX_GROUP_POINTS:
+                step_counts = [max(2, (n + 1) // 2) for n in step_counts]
+
+            axes = [np.linspace(lo, hi, n) for lo, hi, n in zip(lows, highs, step_counts)]
+            grid = np.array(list(itertools.product(*axes)))   # (M, group_dim)
+
+            if A_g.shape[0] > 0 and grid.size > 0:
+                mask = np.all(grid @ A_g.T <= b_g, axis=1)
+                grid = grid[mask]
+
+            if len(grid) == 0:
+                logger.warning(
+                    "_build_feasible_space: group %s has no feasible points — constraints may be infeasible.",
+                    group_indices,
+                )
+
+            feasible_groups.append((group_indices, grid))
+
+        # --- Cross-group Cartesian product ---
+        group_grids = [fg[1] for fg in feasible_groups]
+        group_idx_lists = [fg[0] for fg in feasible_groups]
+
+        sizes = [len(g) for g in group_grids]
+        n_total = int(np.prod(sizes)) if sizes else 0
+
+        if n_total > self._MAX_GROUP_POINTS and self._downsample_seed is not None:
+            rng = np.random.default_rng(self._downsample_seed)
+            target = max(2, int(np.ceil(self._MAX_GROUP_POINTS ** (1.0 / max(len(group_grids), 1)))))
+            subsampled = []
+            for grid in group_grids:
+                n_s = min(len(grid), target)
+                idx = rng.choice(len(grid), n_s, replace=False)
+                subsampled.append(grid[idx])
+            group_grids = subsampled
+
+        points: List[np.ndarray] = []
+        for combo in itertools.product(*[range(len(g)) for g in group_grids]):
+            full_vec = np.zeros(n_opt)
+            for g_pos, pt_idx in enumerate(combo):
+                for col, param_idx in enumerate(group_idx_lists[g_pos]):
+                    full_vec[param_idx] = group_grids[g_pos][pt_idx, col] if group_grids[g_pos].ndim > 1 else group_grids[g_pos][pt_idx]
+            points.append(full_vec)
+
+        logger.info(
+            "_build_feasible_space: %d feasible points from %d groups (%d params).",
+            len(points), len(group_list), n_opt,
+        )
+        return points if points else None
 
     # ------------------------------------------------------------------
     # Public GP interface (called from PSEBrokerWorker via asyncio.to_thread)
@@ -220,23 +377,26 @@ class PSEPointService(Gp):
 
                 if len(self.gpCAMstream) < self.gpcam_init_dataset_size:
                     # Initial dataset phase: GP has no tell() yet, so ask() would fail.
-                    # Mirror the old gpcam_optimization_loop behaviour: pick randomly
-                    # from evaluation points, avoiding points already in-flight.
+                    # Pick randomly from the feasible set (gp_discrete_points if constraints
+                    # were applied, otherwise gp_evaluation_points), avoiding in-flight points.
+                    init_pool = (
+                        self.gp_discrete_points
+                        if self.gp_discrete_points is not None
+                        else self.gp_evaluation_points
+                    )
                     in_flight_set = set(
                         tuple(v.tolist()) for v in self._in_flight.values()
                     )
                     next_point = None
                     for _ in range(20):
-                        idx = np.random.randint(len(self.gp_evaluation_points))
-                        candidate = np.array(self.gp_evaluation_points[idx])
+                        idx = np.random.randint(len(init_pool))
+                        candidate = np.array(init_pool[idx])
                         if tuple(candidate.tolist()) not in in_flight_set:
                             next_point = candidate
                             break
                     if next_point is None:
                         next_point = np.array(
-                            self.gp_evaluation_points[
-                                np.random.randint(len(self.gp_evaluation_points))
-                            ]
+                            init_pool[np.random.randint(len(init_pool))]
                         )
                     # No phantom-tell here: the GP is uninitialised and posterior_mean
                     # would also fail.  In-flight tracking via _in_flight is enough.
@@ -642,7 +802,12 @@ class PSEBrokerWorker:
 
         exp_par = pd.DataFrame(parameter_space)
 
+        constraints: List[Dict] = payload.get("constraints") or []
+        downsample_seed: Optional[int] = payload.get("downsample_seed")
+
         service = PSEPointService(
+            constraints=constraints,
+            downsample_seed=downsample_seed,
             exp_par=exp_par,
             optimizer=optimizer,
             acq_func=acq_func,
@@ -667,10 +832,19 @@ class PSEBrokerWorker:
             self._service = service
         if self._on_service_changed is not None:
             self._on_service_changed(service)
-        await self._emit(PSE_READY, {"has_service": True, **self._capabilities_payload()})
+
+        ready_payload: dict = {
+            "has_service": True,
+            "campaign_id": campaign_id,
+            **self._capabilities_payload(),
+        }
+        if service.feasible_point_count is not None:
+            ready_payload["feasible_point_count"] = service.feasible_point_count
+
+        await self._emit(PSE_READY, ready_payload)
         logger.info(
-            "PSE configured for campaign %s (optimizer=%s, acq_func=%s, params=%d).",
-            campaign_id, optimizer, acq_func, len(parameter_space),
+            "PSE configured for campaign %s (optimizer=%s, acq_func=%s, params=%d, feasible=%s).",
+            campaign_id, optimizer, acq_func, len(parameter_space), service.feasible_point_count,
         )
 
     async def _handle_request_point(self, payload: dict) -> None:
