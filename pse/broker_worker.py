@@ -561,6 +561,68 @@ class PSEPointService(Gp):
                 trial_id, len(self._in_flight),
             )
 
+    def retrain(self, data_points: list) -> None:
+        """Replace the entire GP training set with the provided data points.
+
+        Used when PS excludes a trial from the dataset: PS sends the full set
+        of included completed trials so PSE can rebuild without the bad point.
+
+        Each entry in data_points must have:
+            parameters: dict[name, value]  — parameter values keyed by name
+            value:      float              — scalar result
+            variance:   float | None       — measurement variance
+
+        In-flight state (_in_flight) is preserved so concurrent trials are
+        not disrupted.  Phantom tells are rebuilt after the GP is reset.
+        Grid optimizer has no GP to retrain — this is a no-op for it.
+        """
+        if self.optimizer != "gpcam":
+            logger.debug("retrain: no-op for optimizer=%r", self.optimizer)
+            return
+
+        with self._lock:
+            in_flight = dict(self._in_flight)
+
+            # Rebuild gpCAMstream from the provided included set.
+            self.gpCAMstream = self.gpCAMstream.iloc[0:0].copy()
+            for dp in data_points:
+                params = dp.get("parameters", {})
+                position = np.array(
+                    [params.get(row.name, 0.0) for row in self.exp_par.itertuples()]
+                )
+                variance = float(dp.get("variance") or self.signal_estimate * 1e-6)
+                self.gpCAMstream.loc[len(self.gpCAMstream)] = {
+                    "parameter names": self.exp_par["name"].to_list(),
+                    "position": position,
+                    "value": float(dp["value"]),
+                    "variance": variance,
+                    "mutual information": None,
+                    "itlabel": len(self.gpCAMstream),
+                }
+
+            # Re-initialize GP on real data only (removes any prior phantom points).
+            self.gpcam_init_ae(just_gpcamstream=True)
+
+            # Restore in-flight state and rebuild phantom tells.
+            self._in_flight = in_flight
+            for pos in self._in_flight.values():
+                self._phantom_tell(pos)
+
+            n = len(self.gpCAMstream)
+            if n >= self.gpcam_init_dataset_size:
+                try:
+                    self.gpcam_train(method="global")
+                    self.gpcam_prediction()
+                except Exception:
+                    logger.exception("retrain: training/plotting failed (data saved)")
+
+            self.results_io()
+            self.iterations_inprogress_save_to_file()
+            logger.info(
+                "retrain: GP rebuilt from %d included data points (%d in-flight).",
+                n, len(in_flight),
+            )
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -872,6 +934,28 @@ class PSEBrokerWorker:
         })
 
     async def _handle_submit_result(self, payload: dict) -> None:
+        # Full-dataset rebuild path: PS sends {"full_dataset": true, "data_points": [...]}
+        # to replace the entire training set (e.g. after excluding a bad trial).
+        if payload.get("full_dataset"):
+            with self._lock:
+                service = self._service
+            if service is None:
+                logger.warning("submit_result(full_dataset) received but no PSE service is running.")
+                return
+            data_points = payload.get("data_points", [])
+            campaign_id = payload.get("campaign_id", "?")
+            logger.info(
+                "submit_result(full_dataset): rebuilding from %d points for campaign %s.",
+                len(data_points), campaign_id,
+            )
+            try:
+                await asyncio.to_thread(service.retrain, data_points)
+            except Exception:
+                logger.exception(
+                    "PSEPointService.retrain() failed for campaign %s.", campaign_id
+                )
+            return
+
         trial_id = payload.get("trial_id")
         value = payload.get("value")
         variance = payload.get("variance")
