@@ -44,7 +44,7 @@ def acq_variance_target(x: np.ndarray, gpoptimizer: GPOptimizer):
     #print(x, x.shape)
     #print(gpoptimizer.posterior_covariance(x, variance_only=True)['v(x)'], gpoptimizer.posterior_mean(x)['f(x)'])
     tolerance = 5
-    retval = np.array(gpoptimizer.posterior_covariance(x, variance_only=True)['v(x)']) / ((np.array(gpoptimizer.posterior_mean(x)['f(x)']) + 25) ** 2 + tolerance ** 2)
+    retval = np.array(gpoptimizer.posterior_covariance(x, variance_only=True)['v(x)']) / ((np.array(gpoptimizer.posterior_mean(x)['m(x)']) + 25) ** 2 + tolerance ** 2)
     #print(retval)
     return retval
 
@@ -52,7 +52,7 @@ def acq_variance_target_add(x: np.ndarray, gpoptimizer: GPOptimizer):
 
     #print(x, x.shape)
     #print(gpoptimizer.posterior_covariance(x, variance_only=True)['v(x)'], gpoptimizer.posterior_mean(x)['f(x)'])
-    retval = 3 * np.array(gpoptimizer.posterior_covariance(x, variance_only=True)['v(x)']) + 1.0 / (np.array(gpoptimizer.posterior_mean(x)['f(x)']) + 25) ** 2
+    retval = 3 * np.array(gpoptimizer.posterior_covariance(x, variance_only=True)['v(x)']) + 1.0 / (np.array(gpoptimizer.posterior_mean(x)['m(x)']) + 25) ** 2
     #print(retval)
     return retval
 
