@@ -975,20 +975,58 @@ class Gp:
                             filename='prediction_gpcam', mark_maximum=mark_maximum,
                             support_points=support_points)
 
-            # plot mutual information and hyperparameters
-            hypar_cols = [col for col in self.gpCAMstream.columns if col.startswith('hy')]
-            if 'mutual information' in self.gpCAMstream.columns:
-                hypar_cols = ['mutual information'] + hypar_cols
+            # plot hyperparameters (primary y-axis) and mutual information (secondary y-axis)
+            hy_cols = [col for col in self.gpCAMstream.columns if col.startswith('hy')]
+            has_mi = 'mutual information' in self.gpCAMstream.columns
 
-            if hypar_cols:
-                filtered = self.gpCAMstream[hypar_cols].copy()
+            if hy_cols or has_mi:
+                import matplotlib.pyplot as plt
+                import matplotlib
+
+                all_cols = (['mutual information'] if has_mi else []) + hy_cols
+                filtered = self.gpCAMstream[all_cols].copy()
                 filtered.insert(0, 'index', self.gpCAMstream.index)
                 filtered = filtered.dropna()
-                filtered = filtered.to_numpy().T
-                if filtered.shape[0] >= 2 and filtered.shape[1] > 0:
-                    save_plot_1d(filtered[0], filtered[1:], filename=path.join(path1, 'hypars'), xlabel='iteration',
-                                 ylabel='information gain / hyperparameter', trace_label=hypar_cols, yscale='symlog',
-                                 legend_loc='upper left')
+
+                if not filtered.empty:
+                    font = {'family': 'sans-serif', 'weight': '200', 'size': 14}
+                    matplotlib.rc('font', **font)
+                    fig, ax1 = plt.subplots()
+                    x = filtered['index'].to_numpy()
+
+                    if hy_cols:
+                        for col in hy_cols:
+                            ax1.plot(x, filtered[col].to_numpy(), label=col)
+                        ax1.set_yscale('symlog')
+                        ax1.set_ylabel('hyperparameter')
+
+                    if has_mi:
+                        ax2 = ax1.twinx()
+                        ax2.plot(x, filtered['mutual information'].to_numpy(),
+                                 color='tab:orange', linestyle='--', label='mutual information')
+                        ax2.set_ylabel('mutual information')
+                        ax2.set_yscale('symlog')
+                        ax2.yaxis.set_major_locator(
+                            matplotlib.ticker.SymmetricalLogLocator(base=10, linthresh=2))
+                        ax2.yaxis.set_minor_locator(
+                            matplotlib.ticker.SymmetricalLogLocator(base=10, linthresh=2,
+                                                                     subs=np.arange(2, 10)))
+                        ax2.yaxis.set_major_formatter(matplotlib.ticker.LogFormatterSciNotation())
+                        ax2.tick_params(axis='y', which='both', right=True)
+
+                    ax1.set_xlabel('iteration')
+                    handles, labels = ax1.get_legend_handles_labels()
+                    if has_mi:
+                        h2, l2 = ax2.get_legend_handles_labels()
+                        handles += h2
+                        labels += l2
+                    ax1.legend(handles, labels, loc='upper left')
+                    plt.tight_layout()
+
+                    hypars_path = path.join(path1, 'hypars')
+                    plt.savefig(hypars_path + '.pdf')
+                    plt.savefig(hypars_path + '.png')
+                    plt.close('all')
 
     def run(self, task_dict=None, from_pause=False):
         """
