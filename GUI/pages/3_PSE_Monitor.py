@@ -55,7 +55,7 @@ with st.sidebar:
 
 def _get(endpoint: str) -> requests.Response | None:
     try:
-        return requests.get(f"http://127.0.0.1:{port}{endpoint}", timeout=3)
+        return requests.get(f"http://127.0.0.1:{port}{endpoint}", timeout=15)
     except requests.exceptions.ConnectionError:
         return None
     except requests.exceptions.Timeout:
@@ -76,12 +76,20 @@ def server_status():
     info = _fetch_info()
     col1, col2, col3 = st.columns(3)
     if info is None:
-        col1.metric("Server", "unreachable")
-        col2.metric("Service", "—")
-        col3.metric("Status", "—")
-        st.error(f"Cannot reach GP server on port {port}. Is it running?")
+        last_status = st.session_state.get("_monitor_last_status")
+        if last_status == "retraining":
+            col1.metric("Server", f"port {port}")
+            col2.metric("Service", "active")
+            col3.metric("Status", "retraining")
+            st.warning("GP server is busy retraining — no response within timeout.")
+        else:
+            col1.metric("Server", "unreachable")
+            col2.metric("Service", "—")
+            col3.metric("Status", "—")
+            st.error(f"Cannot reach GP server on port {port}. Is it running?")
         return
 
+    st.session_state["_monitor_last_status"] = info.get("status")
     col1.metric("Server", f"port {port}")
     col2.metric("Service", "active" if info["has_service"] else "idle")
     col3.metric("Status", info["status"] or "—")
