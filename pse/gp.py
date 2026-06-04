@@ -953,11 +953,13 @@ class Gp:
 
             if self.show_support_points:
                 support_points = self.gpCAMstream['position'].to_numpy()
-                if support_points.dtype == object:
+                if support_points.dtype == object and len(support_points) > 0:
                     support_points = np.stack(support_points)
                     vv = self.gpCAMstream[['value', 'variance']].to_numpy()
                     support_points = np.concatenate((support_points,
                                                      self.gpCAMstream[['value', 'variance']].to_numpy()), axis=-1)
+                else:
+                    support_points = None
             else:
                 support_points = None
 

@@ -163,6 +163,19 @@ class PSEPointService(Gp):
                     self.gp_evaluation_points = np.array(feasible)
             elif self.gp_discrete_points is not None:
                 self.gp_discrete_points = self._filter_discrete_points()
+            else:
+                # No constraints, no discrete points — full unconstrained meshgrid.
+                # Downsample if it exceeds the GP evaluation point limit.
+                n_total = len(self.gp_evaluation_points)
+                if n_total > self._MAX_GROUP_POINTS:
+                    rng = np.random.default_rng(self._downsample_seed)
+                    idx = rng.choice(n_total, self._MAX_GROUP_POINTS, replace=False)
+                    self.gp_evaluation_points = self.gp_evaluation_points[idx]
+                    logger.info(
+                        "PSEPointService: unconstrained grid downsampled from %d to %d points.",
+                        n_total, len(self.gp_evaluation_points),
+                    )
+                self.feasible_point_count = len(self.gp_evaluation_points)
             self.gpcam_init_ae()
         logger.info(
             "PSEPointService initialized: optimizer=%s, n_params=%d, feasible=%s",
@@ -308,9 +321,9 @@ class PSEPointService(Gp):
         sizes = [len(g) for g in group_grids]
         n_total = int(np.prod(sizes)) if sizes else 0
 
-        if n_total > self._MAX_GROUP_POINTS and self._downsample_seed is not None:
+        if n_total > self._MAX_GROUP_POINTS:
             rng = np.random.default_rng(self._downsample_seed)
-            target = max(2, int(np.ceil(self._MAX_GROUP_POINTS ** (1.0 / max(len(group_grids), 1)))))
+            target = max(2, int(np.floor(self._MAX_GROUP_POINTS ** (1.0 / max(len(group_grids), 1)))))
             subsampled = []
             for grid in group_grids:
                 n_s = min(len(grid), target)
@@ -503,6 +516,7 @@ class PSEPointService(Gp):
                 try:
                     train_every = self.train_global_every or 1
                     method = "global" if n % train_every == 0 else "local"
+                    self.task_dict["status"] = "retraining"
                     self.gpcam_train(method=method)
                     self.gpcam_prediction()
                     hypars = self.my_ae.get_hyperparameters().tolist()
@@ -515,6 +529,8 @@ class PSEPointService(Gp):
                         "submit_result: training/plotting failed for trial %s (data still saved)",
                         trial_id,
                     )
+                finally:
+                    self.task_dict["status"] = "running"
 
             progress = min(n / max(self.gpcam_iterations, 1), 1.0)
             self.task_dict["progress"] = f"{progress * 100:.2f}%"
@@ -611,10 +627,13 @@ class PSEPointService(Gp):
             n = len(self.gpCAMstream)
             if n >= self.gpcam_init_dataset_size:
                 try:
+                    self.task_dict["status"] = "retraining"
                     self.gpcam_train(method="global")
                     self.gpcam_prediction()
                 except Exception:
                     logger.exception("retrain: training/plotting failed (data saved)")
+                finally:
+                    self.task_dict["status"] = "running"
 
             self.results_io()
             self.iterations_inprogress_save_to_file()
