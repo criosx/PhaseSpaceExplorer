@@ -48,8 +48,8 @@ if 'first_intialization' not in st.session_state:
             "-c",
             (
                 "import sys; "
-                "from pse.gp_server import GpServer; "
-                "GpServer().run(int(sys.argv[1]))"
+                "from pse.standalone_server import StandaloneGpServer; "
+                "StandaloneGpServer().run(int(sys.argv[1]))"
             ),
             str(port),
         ],

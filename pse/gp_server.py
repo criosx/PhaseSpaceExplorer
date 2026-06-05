@@ -1,13 +1,12 @@
 from flask import Flask, jsonify
 from flask import abort, request
-from pse.gp import Gp as GpParent
 from pse.broker_worker import PSEBrokerWorker, PSEPointService
 import sys
 
 DEFAULT_PORT = 5025
 
 
-class GpServer:
+class GpServerBase:
     def __init__(self):
         self.gpo: PSEPointService | None = None
         self.port = None
@@ -16,19 +15,14 @@ class GpServer:
             'cancelled': True,
             'paused': False,
         }
-        self._broker = PSEBrokerWorker()
-        self._broker._on_service_changed = self._sync_gpo
-        self._broker.start()
         self.app = Flask(__name__)
         self.add_routes()
 
-    def _sync_gpo(self, service):
-        """Called by PSEBrokerWorker when a service is configured or cleared via broker."""
-        self.gpo = service
-        if service is not None:
-            self.task_dict.update({'cancelled': False, 'progress': '0%', 'paused': False})
-        else:
-            self.task_dict['cancelled'] = True
+    def _on_service_started(self, service):
+        pass
+
+    def _on_service_stopped(self):
+        pass
 
     def add_routes(self):
         self.app.add_url_rule("/", view_func=self.default, methods=['GET'])
@@ -73,7 +67,7 @@ class GpServer:
         return "PSE paused"
 
     def resume_pse(self):
-        data = self.check_post()
+        self.check_post()
         if self.task_dict.get('paused') and self.gpo is not None:
             self.gpo._paused = False
             self.task_dict['paused'] = False
@@ -116,26 +110,47 @@ class GpServer:
         self.task_dict['progress'] = '0%'
         self.task_dict['cancelled'] = False
         self.task_dict['paused'] = False
-
-        # Register with broker; this also publishes pse.ready so Protocol Studio
-        # can replay notify_in_flight for any in-flight trials.
-        self._broker.set_service(service)
-
+        self._on_service_started(service)
         return "PSE started"
 
     def stop_pse(self):
         if self.task_dict.get('cancelled', True):
             return "PSE was already stopped."
         self.task_dict['cancelled'] = True
-        self._broker.set_service(None)
+        self._on_service_stopped()
         if self.gpo is not None:
             self.gpo.gp_hardware_shutdown()
             self.gpo = None
         return "PSE stopped"
 
 
+class BrokerGpServer(GpServerBase):
+    def __init__(self):
+        self._broker = PSEBrokerWorker()
+        self._broker._on_service_changed = self._sync_gpo
+        self._broker.start()
+        super().__init__()
+
+    def _sync_gpo(self, service):
+        """Called by PSEBrokerWorker when a service is configured or cleared via broker."""
+        self.gpo = service
+        if service is not None:
+            self.task_dict.update({'cancelled': False, 'progress': '0%', 'paused': False})
+        else:
+            self.task_dict['cancelled'] = True
+
+    def _on_service_started(self, service):
+        self._broker.set_service(service)
+
+    def _on_service_stopped(self):
+        self._broker.set_service(None)
+
+
+# Backward-compatible alias
+GpServer = BrokerGpServer
+
+
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else None
-    gp_server = GpServer()
-    gp_server.run(port)
+    BrokerGpServer().run(port)
     _ = input("Press enter to exit...")
