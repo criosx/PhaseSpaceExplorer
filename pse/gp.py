@@ -2,6 +2,8 @@ from gpcam import GPOptimizer
 from os import path, mkdir
 import json
 import math
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from threading import Thread
 from queue import Queue
