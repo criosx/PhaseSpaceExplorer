@@ -83,6 +83,8 @@ def make_service() -> PSEPointService:
     service.gpCAMstream.__len__ = MagicMock(return_value=2)
 
     service.task_dict = {"cancelled": False, "paused": False, "progress": "0%", "status": "running"}
+    service.optimizer = "gpcam"
+    service._acq_func_name = "variance_target"
 
     return service
 
@@ -95,15 +97,16 @@ class TestRequestPoint:
 
     def test_returns_trial_id_and_params(self):
         service = make_service()
-        trial_id, params = service.request_point()
+        trial_id, params, pse_ctx = service.request_point()
 
         assert isinstance(trial_id, str) and len(trial_id) == 36  # UUID
         assert set(params.keys()) == {"DOPC", "DPPC"}
         assert all(isinstance(v, float) for v in params.values())
+        assert "acq_func" in pse_ctx and "training_set_size" in pse_ctx
 
     def test_registers_in_flight(self):
         service = make_service()
-        trial_id, _ = service.request_point()
+        trial_id, _, _ctx = service.request_point()
         assert trial_id in service._in_flight
 
     def test_increments_gpiteration(self):
@@ -119,8 +122,8 @@ class TestRequestPoint:
     def test_two_concurrent_requests_call_ask_twice(self):
         """Each request_point acquires the lock, so two sequential calls both ask."""
         service = make_service()
-        tid1, _ = service.request_point()
-        tid2, _ = service.request_point()
+        tid1, _, _ctx1 = service.request_point()
+        tid2, _, _ctx2 = service.request_point()
         assert tid1 != tid2
         assert service.my_ae.ask.call_count == 2
 
@@ -139,19 +142,19 @@ class TestSubmitResult:
 
     def test_removes_from_in_flight(self):
         service = make_service()
-        trial_id, _ = service.request_point()
+        trial_id, _, _ctx = service.request_point()
         service.submit_result(trial_id, -12.5, None)
         assert trial_id not in service._in_flight
 
     def test_updates_gpCAMstream(self):
         service = make_service()
-        trial_id, _ = service.request_point()
+        trial_id, _, _ctx = service.request_point()
         service.submit_result(trial_id, -8.0, 0.5)
         service.gpCAMstream.loc.__setitem__.assert_called_once()
 
     def test_uses_default_variance_when_none(self):
         service = make_service()
-        trial_id, _ = service.request_point()
+        trial_id, _, _ctx = service.request_point()
         service.submit_result(trial_id, 1.0, None)
         # signal_estimate is 1.0 → default variance is 1e-6
         _, call_kwargs = service.gpCAMstream.loc.__setitem__.call_args
@@ -166,7 +169,7 @@ class TestSubmitResult:
 
     def test_reinitialises_ae_after_submit(self):
         service = make_service()
-        trial_id, _ = service.request_point()
+        trial_id, _, _ctx = service.request_point()
         service.submit_result(trial_id, 2.0, None)
         assert service.gpcam_init_ae.called
 
@@ -179,13 +182,13 @@ class TestCancelTrial:
 
     def test_removes_from_in_flight(self):
         service = make_service()
-        trial_id, _ = service.request_point()
+        trial_id, _, _ctx = service.request_point()
         service.cancel_trial(trial_id)
         assert trial_id not in service._in_flight
 
     def test_rebuilds_phantom_tells(self):
         service = make_service()
-        tid1, _ = service.request_point()
+        tid1, _, _ctx = service.request_point()
         service.request_point()  # second in-flight
         service.cancel_trial(tid1)
         # gpcam_init_ae called once on cancel (to rebuild without cancelled point)
@@ -256,7 +259,7 @@ def make_broker_worker_with_service(paused=False):
 
     service = MagicMock(spec=PSEPointService)
     service._paused = paused
-    service.request_point.return_value = ("trial-uuid", {"DOPC": 0.1})
+    service.request_point.return_value = ("trial-uuid", {"DOPC": 0.1}, {"acq_func": "variance_target", "training_set_size": 5, "uncertainty_at_suggestion": 0.02})
     worker._service = service
 
     # Replace _emit with a no-op coroutine so handlers can be awaited

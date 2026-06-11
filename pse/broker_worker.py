@@ -88,6 +88,11 @@ def acq_variance_target(x: np.ndarray, gpoptimizer: GPOptimizer) -> np.ndarray:
 # Maps the string name sent in command.pse.configure (acq_func field) to the
 # value that GPOptimizer.ask(acquisition_function=...) expects.
 # Values are either a Python callable (custom) or a plain string (gpCAM built-in).
+#
+# TODO: refactor to accept parameters (e.g. kappa for ucb/lcb, target for
+# target_probability).  The configure payload should carry an optional
+# acq_func_params dict forwarded to GPOptimizer.ask().  The registry would
+# become a registry of factory functions rather than bare callables.
 # ---------------------------------------------------------------------------
 
 ACQUISITION_FUNCTIONS: Dict[str, Any] = {
@@ -136,6 +141,7 @@ class PSEPointService(Gp):
         # Translate the acq_func string stored by Gp.__init__ into the callable or
         # built-in string that GPOptimizer.ask() expects.  Unknown names fall back
         # to acq_variance_target so existing callers that omit acq_func are unaffected.
+        self._acq_func_name: str = self.acq_func  # preserve string name for pse_context
         self.acq_func = ACQUISITION_FUNCTIONS.get(self.acq_func, acq_variance_target)
         # task_dict used by gp_server for status reporting
         self.task_dict = {"cancelled": False, "paused": False,
@@ -441,8 +447,28 @@ class PSEPointService(Gp):
             self.gpiteration += 1
             self.iterations_inprogress_save_to_file()
 
+            # Build pse_context for dm_worker trial records.
+            optimizer = getattr(self, "optimizer", "gpcam")
+            n_training = len(self.gpCAMstream) if optimizer == "gpcam" else 0
+            uncertainty: Optional[float] = None
+            if (optimizer == "gpcam"
+                    and getattr(self, "my_ae", None) is not None
+                    and n_training >= self.gpcam_init_dataset_size):
+                try:
+                    v = self.my_ae.posterior_covariance(
+                        next_point.reshape(1, -1), variance_only=True
+                    )["v(x)"]
+                    uncertainty = float(np.atleast_1d(v)[0])
+                except Exception:
+                    pass
+            pse_context = {
+                "acq_func": getattr(self, "_acq_func_name", "unknown"),
+                "training_set_size": n_training,
+                "uncertainty_at_suggestion": uncertainty,
+            }
+
             logger.info("request_point → trial %s  params=%s", trial_id, params)
-            return trial_id, params
+            return trial_id, params, pse_context
 
     def submit_result(
         self, trial_id: str, value: float, variance: Optional[float]
@@ -939,7 +965,7 @@ class PSEBrokerWorker:
             return
 
         try:
-            trial_id, params = await asyncio.to_thread(service.request_point)
+            trial_id, params, pse_context = await asyncio.to_thread(service.request_point)
         except Exception:
             logger.exception("PSEPointService.request_point() failed.")
             return
@@ -950,6 +976,7 @@ class PSEBrokerWorker:
             **payload,
             "trial_id": trial_id,
             "parameters": params,
+            "pse_context": pse_context,
         })
 
     async def _handle_submit_result(self, payload: dict) -> None:
