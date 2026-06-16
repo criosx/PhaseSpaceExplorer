@@ -602,6 +602,7 @@ class PSEPointService(Gp):
                 "notify_in_flight: trial %s re-registered (%d total in-flight).",
                 trial_id, len(self._in_flight),
             )
+            self.iterations_inprogress_save_to_file()
 
     def retrain(self, data_points: list) -> None:
         """Replace the entire GP training set with the provided data points.
