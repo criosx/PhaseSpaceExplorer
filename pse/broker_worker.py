@@ -889,14 +889,17 @@ class PSEBrokerWorker:
         # Defensively deregister any existing service before creating a new one.
         # Under normal operation the prior campaign's stop_campaign is always
         # processed first (queue is sequential), so this is a safety net only.
+        # We replace _service directly rather than calling set_service(None) to
+        # avoid emitting pse.ready(has_service=False), which would cause PS to
+        # re-send configure and create a notification loop.
         with self._lock:
             existing = self._service
-        if existing is not None:
-            logger.warning(
-                "configure for campaign %s: replacing active service without prior stop_campaign.",
-                campaign_id,
-            )
-            self.set_service(None)
+            if existing is not None:
+                logger.warning(
+                    "configure for campaign %s: replacing active service without prior stop_campaign.",
+                    campaign_id,
+                )
+                self._service = None
         optimizer = payload.get("optimizer", "gpcam")
         storage_path = payload.get("storage_path") or f"pse_runs/{campaign_id}"
         os.makedirs(storage_path, exist_ok=True)
