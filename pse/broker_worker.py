@@ -656,6 +656,7 @@ class PSEPointService(Gp):
                     self.task_dict["status"] = "retraining"
                     self.gpcam_train(method="global")
                     self.gpcam_prediction()
+                    self.plot_results()
                 except Exception:
                     logger.exception("retrain: training/plotting failed (data saved)")
                 finally:
