@@ -886,6 +886,24 @@ class PSEBrokerWorker:
 
         campaign_id = payload.get("campaign_id", "")
 
+        # Deduplicate: if a service already exists for this exact campaign_id,
+        # the message is a stale duplicate (e.g. left in the durable queue from a
+        # prior notification loop).  Re-emit pse.ready so PS gets the confirmation
+        # it expects, then drop the message without re-initialising.
+        with self._lock:
+            existing = self._service
+        if existing is not None and getattr(existing, "_campaign_id", None) == campaign_id:
+            logger.info(
+                "configure for campaign %s: service already active — re-emitting pse.ready.",
+                campaign_id,
+            )
+            await self._emit(PSE_READY, {
+                "has_service": True,
+                "campaign_id": campaign_id,
+                **self._capabilities_payload(),
+            })
+            return
+
         # Defensively deregister any existing service before creating a new one.
         # Under normal operation the prior campaign's stop_campaign is always
         # processed first (queue is sequential), so this is a safety net only.
@@ -930,6 +948,7 @@ class PSEBrokerWorker:
             signal_estimate=float(payload.get("signal_estimate", 10.0)),
             resume=bool(payload.get("resume", True)),
         )
+        service._campaign_id = campaign_id
         try:
             await asyncio.to_thread(service.initialize)
             await asyncio.to_thread(service.iterations_inprogress_save_to_file)
