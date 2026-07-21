@@ -517,6 +517,7 @@ class PSEPointService(Gp):
                 self.task_dict["progress"] = f"{progress * 100:.2f}%"
                 self.results_io()
                 self.iterations_inprogress_save_to_file()
+                self.plot_results()
                 logger.info("submit_result (grid): trial %s  value=%.4g  n=%d", trial_id, value, n)
                 return
 
@@ -859,8 +860,7 @@ class PSEBrokerWorker:
         def _finalize() -> None:
             service.results_io()
             service.iterations_inprogress_save_to_file()
-            if service.optimizer == "gpcam":
-                service.plot_results()
+            service.plot_results()
 
         try:
             await asyncio.to_thread(_finalize)
