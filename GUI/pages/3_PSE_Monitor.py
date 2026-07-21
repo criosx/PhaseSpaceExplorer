@@ -30,27 +30,6 @@ with st.sidebar:
     )
     st.caption(f"Default port: {DEFAULT_PORT}")
 
-    st.divider()
-    st.header("Browse Archives")
-    known_path = st.session_state.get("_monitor_storage_path")
-    if known_path:
-        archive_root = Path(known_path).parent
-        active = Path(known_path)
-        subdirs = sorted(p for p in archive_root.iterdir() if p.is_dir() and p != active)
-        if subdirs:
-            selected = st.selectbox(
-                "Select directory to view",
-                options=[None] + subdirs,
-                format_func=lambda p: "— live campaign —" if p is None else p.name,
-            )
-            st.session_state["_browse_override"] = selected
-        else:
-            st.caption("No sibling directories found.")
-            st.session_state["_browse_override"] = None
-    else:
-        st.caption("Connect to server first to populate archive list.")
-        st.session_state["_browse_override"] = None
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _get(endpoint: str) -> requests.Response | None:
@@ -67,6 +46,51 @@ def _fetch_info() -> dict | None:
     if resp is not None and resp.ok:
         return resp.json()
     return None
+
+
+# pse_runs/ is relative to the GP server's working directory (PhaseSpaceExplorer/).
+# This page lives two levels deep (GUI/pages/), so go up two levels to find it.
+_PSE_RUNS_DIR = Path(__file__).parent.parent.parent / "pse_runs"
+
+# Bootstrap storage path on every full page run so the sidebar archive browser
+# is populated immediately rather than waiting for the server_status fragment.
+if "_monitor_storage_path" not in st.session_state:
+    _info = _fetch_info()
+    if _info and _info.get("storage_path"):
+        st.session_state["_monitor_storage_path"] = _info["storage_path"]
+
+with st.sidebar:
+    st.divider()
+    st.header("Browse Archives")
+    known_path = st.session_state.get("_monitor_storage_path")
+    active = Path(known_path) if known_path else None
+
+    # Use the live path's parent if known, otherwise fall back to pse_runs/.
+    if active and active.parent.is_dir():
+        archive_root = active.parent
+    elif _PSE_RUNS_DIR.is_dir():
+        archive_root = _PSE_RUNS_DIR
+    else:
+        archive_root = None
+
+    if archive_root:
+        subdirs = sorted(
+            p for p in archive_root.iterdir()
+            if p.is_dir() and p != active
+        )
+        if subdirs:
+            selected = st.selectbox(
+                "Select directory to view",
+                options=[None] + subdirs,
+                format_func=lambda p: "— live campaign —" if p is None else p.name,
+            )
+            st.session_state["_browse_override"] = selected
+        else:
+            st.caption("No archive directories found.")
+            st.session_state["_browse_override"] = None
+    else:
+        st.caption("No archive directories found.")
+        st.session_state["_browse_override"] = None
 
 
 # ── Server status ─────────────────────────────────────────────────────────────
