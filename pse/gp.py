@@ -265,7 +265,11 @@ class Gp:
                 "No optimization parameters selected. "
                 "At least one parameter must have optimize=True."
             )
-        columns_to_keep = ['name', 'type', 'value', 'lower_opt', 'upper_opt', 'step_opt']
+        columns_to_keep = ['name', 'type', 'value', 'lower_opt', 'upper_opt', 'step_opt', 'scale']
+        # 'scale' may be absent from older DataFrames — fill with 'linear' if missing
+        for col in columns_to_keep:
+            if col not in self.exp_par.columns:
+                self.exp_par[col] = 'linear' if col == 'scale' else None
         self.exp_par = self.exp_par[columns_to_keep]
 
         # List of exploration steps and axes (for plotting in gpcam or for the gridsearch)
@@ -274,9 +278,19 @@ class Gp:
         for row in self.exp_par.itertuples():
             steps = int((row.upper_opt - row.lower_opt) / row.step_opt) + 1
             self.steplist.append(steps)
-            axis = []
-            for i in range(steps):
-                axis.append(row.lower_opt + i * row.step_opt)
+            scale = getattr(row, 'scale', 'linear') or 'linear'
+            if scale == 'log':
+                axis = list(np.logspace(np.log10(row.lower_opt), np.log10(row.upper_opt), steps))
+            elif scale == 'logistic':
+                # Logit-spaced: dense near boundaries, sparse in the middle.
+                # Points at i/(n+1) in normalised space — equivalent to n+2
+                # uniform points with the 0 and 1 endpoints discarded.
+                norm = np.arange(1, steps + 1) / (steps + 1)
+                logit = np.log(norm / (1.0 - norm))
+                norm_scaled = (logit - logit[0]) / (logit[-1] - logit[0])
+                axis = list(row.lower_opt + norm_scaled * (row.upper_opt - row.lower_opt))
+            else:
+                axis = [row.lower_opt + i * row.step_opt for i in range(steps)]
             self.axes.append(axis)
 
         # result queue for communicating with the measurment processes

@@ -417,9 +417,16 @@ def monitor():
             for row in opt_pars.itertuples():
                 steps = int((row.upper_opt - row.lower_opt) / row.step_opt) + 1
                 steplist.append(steps)
-                axis = []
-                for i in range(steps):
-                    axis.append(row.lower_opt + i * row.step_opt)
+                scale = getattr(row, 'scale', 'linear') or 'linear'
+                if scale == 'log':
+                    axis = list(np.logspace(np.log10(row.lower_opt), np.log10(row.upper_opt), steps))
+                elif scale == 'logistic':
+                    norm = np.arange(1, steps + 1) / (steps + 1)
+                    logit = np.log(norm / (1.0 - norm))
+                    norm_scaled = (logit - logit[0]) / (logit[-1] - logit[0])
+                    axis = list(row.lower_opt + norm_scaled * (row.upper_opt - row.lower_opt))
+                else:
+                    axis = [row.lower_opt + i * row.step_opt for i in range(steps)]
                 axes.append(axis)
             axes = np.array(axes)
 
