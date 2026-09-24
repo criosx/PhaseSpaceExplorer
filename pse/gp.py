@@ -1115,7 +1115,13 @@ class Gp:
                 results_data = pack(self.results)
                 variances_data = pack(self.variances)
                 iterations_data = pack(self.n_iter)
-                json_out = {'results': results_data, 'variances': variances_data, 'iterations': iterations_data}
+                json_out = {
+                    'results': results_data,
+                    'variances': variances_data,
+                    'iterations': iterations_data,
+                    'param_names': self.exp_par['name'].to_list(),
+                    'axes': [list(ax) for ax in self.axes],
+                }
                 with open(path.join(self.spath, 'results', 'pse_grid_results.json'), 'w') as file:
                     json.dump(json_out, file)
         elif self.optimizer == 'gpcam':

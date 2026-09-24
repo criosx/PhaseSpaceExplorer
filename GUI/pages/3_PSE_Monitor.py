@@ -167,8 +167,25 @@ def results_panel():
     elif res_grid.exists():
         with open(res_grid, "rb") as fh:
             grid = pickle.load(fh)
+
+        # Try to load param names and axis values from the sidecar JSON.
+        axes_meta = {}
+        res_json = pse_dir / "results" / "pse_grid_results.json"
+        if res_json.exists():
+            import json
+            with open(res_json) as fh:
+                axes_meta = json.load(fh)
+
+        param_names = axes_meta.get("param_names") or [f"dim_{i}" for i in range(grid.ndim)]
+        axes = axes_meta.get("axes")
+
         idx = np.array(list(np.ndindex(*grid.shape)))
-        df_grid = pd.DataFrame(idx, columns=[f"dim_{i}" for i in range(grid.ndim)])
+        if axes and len(axes) == grid.ndim:
+            mapped = np.stack([np.array(axes[j])[idx[:, j]] for j in range(grid.ndim)], axis=-1)
+        else:
+            mapped = idx
+
+        df_grid = pd.DataFrame(mapped, columns=param_names)
         df_grid["result"] = grid.flatten()
         st.subheader("Grid results")
         st.dataframe(df_grid, hide_index=False, use_container_width=True)
