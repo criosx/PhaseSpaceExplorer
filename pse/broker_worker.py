@@ -183,6 +183,10 @@ class PSEPointService(Gp):
                     )
                 self.feasible_point_count = len(self.gp_evaluation_points)
             self.gpcam_init_ae()
+        elif self.optimizer == "grid":
+            # Total Cartesian product size — PS uses this as max_steps to stop the
+            # campaign automatically once every grid point has been measured.
+            self.feasible_point_count = sum(1 for _ in itertools.product(*self.axes))
         logger.info(
             "PSEPointService initialized: optimizer=%s, n_params=%d, feasible=%s",
             self.optimizer,
