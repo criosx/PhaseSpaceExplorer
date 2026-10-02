@@ -187,8 +187,22 @@ def results_panel():
 
         df_grid = pd.DataFrame(mapped, columns=param_names)
         df_grid["result"] = grid.flatten()
+
+        var_path = pse_dir / "results" / "pse_grid_variances.pkl"
+        if var_path.exists():
+            with open(var_path, "rb") as fh:
+                var_grid = pickle.load(fh)
+            variances = var_grid.flatten()
+            df_grid["sigma"] = np.sqrt(np.where(variances >= 0, variances, np.nan))
+
         st.subheader("Grid results")
         st.dataframe(df_grid, hide_index=False, use_container_width=True)
+        st.download_button(
+            label="Download CSV",
+            data=df_grid.to_csv(index=False),
+            file_name="pse_grid_results.csv",
+            mime="text/csv",
+        )
 
     else:
         st.info("No results yet.")
