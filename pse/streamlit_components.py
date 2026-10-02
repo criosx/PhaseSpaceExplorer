@@ -403,6 +403,13 @@ def monitor():
             index_combinations = np.array(list(np.ndindex(res_grid.shape)))
             values = res_grid.flatten()
 
+            var_path_grid = os.path.join(st.session_state['pse_dir'], 'results', 'pse_grid_variances.pkl')
+            variances = None
+            if os.path.exists(var_path_grid):
+                with open(var_path_grid, 'rb') as file:
+                    var_grid = pickle.load(file)
+                variances = var_grid.flatten()
+
             opt_pars = pandas.DataFrame(st.session_state['opt_pars'])
             opt_pars = opt_pars[opt_pars['optimize']]
             name_pars = opt_pars['name'].tolist()
@@ -439,8 +446,16 @@ def monitor():
 
             df_res_grid = pandas.DataFrame(index_combinations, columns=[name_pars[i] for i in range(res_grid.ndim)])
             df_res_grid["result"] = values
+            if variances is not None:
+                df_res_grid["sigma"] = np.sqrt(np.where(variances >= 0, variances, np.nan))
             st.text("Measurement Results:")
             st.dataframe(df_res_grid, hide_index=False, width='stretch')
+            st.download_button(
+                label="Download CSV",
+                data=df_res_grid.to_csv(index=False),
+                file_name="pse_grid_results.csv",
+                mime="text/csv",
+            )
 
         else:
             st.text("No results to show.")
