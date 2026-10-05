@@ -163,6 +163,12 @@ def results_panel():
             df_res = pd.DataFrame(pickle.load(fh))
         st.subheader(f"Completed measurements ({len(df_res)})")
         st.dataframe(df_res, hide_index=False, use_container_width=True)
+        st.download_button(
+            label="Download CSV",
+            data=df_res.to_csv(index=False),
+            file_name="pse_gpcam_results.csv",
+            mime="text/csv",
+        )
 
     elif res_grid.exists():
         with open(res_grid, "rb") as fh:
