@@ -152,7 +152,7 @@ def results_panel():
             df_ci = pd.DataFrame(pickle.load(fh))
         if not df_ci.empty:
             st.subheader("In-progress measurements")
-            st.dataframe(df_ci, hide_index=True, use_container_width=True)
+            st.dataframe(df_ci, hide_index=True, width='stretch')
 
     # Finished results — gpCAM
     res_gpcam = pse_dir / "results" / "gpCAMstream.pkl"
@@ -162,7 +162,7 @@ def results_panel():
         with open(res_gpcam, "rb") as fh:
             df_res = pd.DataFrame(pickle.load(fh))
         st.subheader(f"Completed measurements ({len(df_res)})")
-        st.dataframe(df_res, hide_index=False, use_container_width=True)
+        st.dataframe(df_res, hide_index=False, width='stretch')
         st.download_button(
             label="Download CSV",
             data=df_res.to_csv(index=False),
@@ -202,7 +202,7 @@ def results_panel():
             df_grid["sigma"] = np.sqrt(np.where(variances >= 0, variances, np.nan))
 
         st.subheader("Grid results")
-        st.dataframe(df_grid, hide_index=False, use_container_width=True)
+        st.dataframe(df_grid, hide_index=False, width='stretch')
         st.download_button(
             label="Download CSV",
             data=df_grid.to_csv(index=False),
@@ -221,7 +221,7 @@ def results_panel():
             st.subheader("Plots")
             for png in pngs:
                 try:
-                    st.image(str(png), use_container_width=True)
+                    st.image(str(png), width='stretch')
                 except FileNotFoundError:
                     pass
 
